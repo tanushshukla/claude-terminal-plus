@@ -219,12 +219,17 @@ CMD ["/bin/bash", "-c", "\
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
-  claude mcp remove homeassistant -s user 2>/dev/null || true && \
-  claude mcp remove playwright -s user 2>/dev/null || true && \
+  SETTINGS_FILE=/root/.claude/settings.json && \
+  CLAUDE_JSON=/root/.claude.json && \
+  mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
+  { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
+  { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
-    claude mcp add-json homeassistant '{\"command\":\"hass-mcp\"}' -s user && \
-    SETTINGS_FILE=/root/.claude/settings.json && \
-    [ -f \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; \
+    if jq '.mcpServers.homeassistant = {\"type\":\"stdio\",\"command\":\"hass-mcp\"} | del(.mcpServers.playwright)' \"$CLAUDE_JSON\" > /tmp/claude.tmp; then \
+      mv /tmp/claude.tmp \"$CLAUDE_JSON\"; \
+    else \
+      echo '[WARN] Failed to register MCP server in .claude.json'; \
+    fi; \
     ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\",\"Glob(/homeassistant/**)\",\"Glob(/config/**)\",\"Grep(/homeassistant/**)\",\"Grep(/config/**)\"]' && \
     if jq --argjson tools \"$ALLOWED_TOOLS\" '.permissions.allow = ($tools + (.permissions.allow // []) | unique)' \"$SETTINGS_FILE\" > /tmp/settings.tmp; then \
       mv /tmp/settings.tmp \"$SETTINGS_FILE\" && \

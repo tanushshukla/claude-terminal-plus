@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.66] - 2026-05-07
+
+### Fixed
+- Boot-time `Killed` of `claude mcp` calls on small Proxmox VMs (issue #1, "User Arrival has a Problem"). The reported log showed three back-to-back `claude mcp ... Killed` lines, then `jq: error: Could not open file :` (note the empty filename), then `[WARN] Failed to write pre-authorized tools to settings.json`. ttyd would still come up, but MCP wasn't registered and the read-tool allowlist never landed, so every `claude` session prompted for every read.
+
+### Root cause
+Each `claude mcp` invocation spins up a Node process that uses roughly 150 MB resident. With three back-to-back invocations on a memory-tight VM, the OOM killer took them. The old script then chained the `SETTINGS_FILE=...` assignment after `claude mcp add-json` with `&&`, so when the latter was killed the variable never got set, and the downstream `jq` was handed an empty filename.
+
+### Fix
+- Replaced the three boot-time `claude mcp ...` invocations with direct `jq` edits to `~/.claude.json` (the same file `claude mcp -s user` writes to). `jq` does the same JSON edit using around 5 MB instead of 150 MB, so OOM is no longer a concern at boot. The `del(.mcpServers.playwright)` clause keeps the old playwright cleanup behaviour for users upgrading from earlier versions.
+- Hoisted `SETTINGS_FILE` and `CLAUDE_JSON` variable assignments and the `{}` bootstrap of both files above any conditional logic, so they run unconditionally and the rest of the script never sees an empty filename.
+- Wrapped the bootstrap `[ -s "$F" ] || echo '{}' > "$F"` lines in `{ ... ; }` braces so they return a clean exit code into the surrounding `&&` chain regardless of which branch of the `||` runs.
+
 ## [1.2.65] - 2026-05-05
 
 ### Fixed
