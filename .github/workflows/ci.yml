@@ -14,7 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Hadolint (Dockerfile)
+      - name: Hadolint (Dockerfile, advisory)
+        # Advisory only: hadolint upstream cannot yet parse BuildKit heredocs
+        # (`RUN cat > foo <<'EOF' ... EOF`), see hadolint/hadolint#735, and
+        # this Dockerfile uses them for /root/.tmux.conf and /root/.bashrc.
+        # Keep the report visible in CI logs but do not block PRs on it.
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: claudecode/Dockerfile
@@ -23,7 +27,8 @@ jobs:
           # DL4006: the CMD is a single `&&` chain, no pipes, so set -o pipefail
           # would not buy us anything.
           ignore: DL3008,DL3013,DL3018,DL4006
-          failure-threshold: warning
+          failure-threshold: error
+          no-fail: true
 
       - name: Validate YAML config files parse
         run: |
