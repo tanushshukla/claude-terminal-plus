@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.69] - 2026-05-09
+
+### Security
+Scope reductions and supply-chain hardening, ported from [@umrath](https://github.com/umrath)'s sibling fork [umrath/claude-hass-app](https://github.com/umrath/claude-hass-app) with his explicit permission (HA Community thread post #15: "Feel free to incorporate it in your version, @sproft").
+
+- **`full_access: false`** in `claudecode/config.yaml`. Previously `true` (carried from upstream 1.2.61, originally enabled to mount the Docker socket). The Supervisor's full-hardware-access flag is broader than anything the app needs.
+- **Dropped `docker_api: true`** from `claudecode/config.yaml`. Docker daemon access from inside the app is effectively root-on-host. Nothing in the default user flow needs it. Users who actually want to run `docker` from inside `claude` can layer it back on locally.
+- **Dropped `docker-cli`** from the `apk add` line in `claudecode/Dockerfile`. Coherent with removing `docker_api` — no daemon to talk to.
+- **Dropped `capability net_admin`** from `claudecode/apparmor.txt`. The app needs outbound HTTP, not interface/routing/firewall modification. `capability net_raw` is kept (raw sockets for things like ICMP/curl).
+- **Pinned `ttyd` binary integrity** in the Dockerfile: SHA256 verified against an explicit list per arch, build fails closed on mismatch. Stops a compromised or replaced GitHub release from silently shipping a different binary.
+- **Pinned `mbpoll` source** to the v1.5.4 release tag (`git clone --depth 1 --branch v1.5.4`). Previously cloning unpinned `main`.
+- **Sanitized `FONT_SIZE`** read from `/data/options.json` in the boot script (`case $FONT_SIZE in *[!0-9]*|'') FONT_SIZE=14;; esac`). Defence-in-depth: the schema already enforces `int(10,24)`, but if the options file is hand-edited the sanitization keeps a non-numeric value from being interpolated into the `ttyd -t "fontSize=$FONT_SIZE"` invocation.
+
+### Breaking
+- Users who relied on running `docker ...` from inside `claude` (anyone who shelled out to the host's Docker daemon) will lose that ability. The app no longer requests `docker_api`, and the `docker` CLI is no longer installed. Add them back in a local override only if you actually need them.
+
 ## [1.2.68] - 2026-05-09
 
 ### Documentation
