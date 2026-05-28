@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.71] - 2026-05-28
+
+### Fixed
+- **`claude: command not found` in the web terminal after 1.2.70** (issues #15, #16). 1.2.70 moved the npm global prefix off the read-only `/usr/local` tree to `/data/npm-global` and `/opt/npm-global` and added both to `PATH` via the Dockerfile `ENV`. That `ENV PATH` is correct for ordinary processes, but the web terminal opens a login shell (`bash --login`, or tmux when session persistence is on), which sources `/etc/profile`. On the Alpine base image `/etc/profile` resets `PATH` to a fixed default (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that contains neither npm prefix, so the relocated `claude` dropped off `PATH`. Before 1.2.70 the binary lived in `/usr/local/bin`, which is in that default, so it was unaffected. The fix re-adds `/data/npm-global/bin:/opt/npm-global/bin:/root/.local/bin` to `PATH` in `/root/.bashrc`, which login shells source after `/etc/profile` (via `~/.profile`), so the prepend wins.
+
+### CI
+- The boot smoke test now asserts that a real login shell (`bash -lc 'command -v claude'`) resolves `claude` on `PATH`. The previous smoke test stubbed out the `exec ttyd` launch and only checked that the seeded binary existed on disk, so it never exercised the login-shell `PATH` reset that caused #15/#16.
+
 ## [1.2.70] - 2026-05-26
 
 ### Fixed

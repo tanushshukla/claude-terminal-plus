@@ -170,6 +170,14 @@ jobs:
           grep -q '\[smoke\] boot reached ttyd launch (stubbed)'            smoke/boot.log
           # Seeded layout must actually contain the claude binary symlink.
           test -x smoke/data/npm-global/bin/claude
+          # Regression guard for #15/#16: the web terminal opens a login shell,
+          # and /etc/profile on the Alpine base resets PATH. `claude` must still
+          # resolve on PATH in a real login shell, not just exist on disk.
+          docker run --rm \
+            -v "$PWD/smoke/data:/data:rw" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            -lc 'command -v claude' | grep -q '/npm-global/bin/claude'
 
       - name: Boot smoke covers the failure-tail path on a forced timeout
         run: |
