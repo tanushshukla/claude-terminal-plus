@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.76.1] - 2026-07-02
+
+### Plus overlay
+- Rebased the Claude Terminal Plus overlay (image paste + voice input) on upstream 1.2.76. Overlay changes: image upload wrapper on the ingress port (paste/drag-drop/upload an image, get a `/data/images/...` path copied to the clipboard for Claude) and a voice-dictation modal. See upstream's 1.2.76 entry below for what changed in the base release.
+
 ## [1.2.76] - 2026-06-26
 
 ### Fixed

@@ -1,5 +1,8 @@
 # Claude Code for Home Assistant
 
+<!-- claude-terminal-plus overlay marker -->
+> **Claude Terminal Plus** — this is a fork of [sproft/hass-claude](https://github.com/sproft/hass-claude) that adds **image paste** (paste, drag-drop, or upload an image in the web terminal and get a file path for Claude) and **voice input**, ported from [esjavadex/claude-code-ha](https://github.com/esjavadex/claude-code-ha). It auto-syncs with upstream daily. Install URL: `https://github.com/tanushshukla/claude-terminal-plus`
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Anthropic's AI coding assistant, directly inside Home Assistant. Build automations, debug your config, and manage your smart home from a browser-based terminal in the HA sidebar.

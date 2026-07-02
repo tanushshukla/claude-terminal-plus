@@ -285,3 +285,11 @@ CMD ["/bin/bash", "-c", "\
     -t \"theme=$COLORS\" \
     \"${SHELL_CMD[@]}\" \
 "]
+
+# --- claude-terminal-plus overlay ---
+# Image upload wrapper: serves the ingress UI on 7682, proxies the terminal
+# to the untouched upstream ttyd on 7681, saves pasted images to /data/images.
+# Kept as an append-only block so upstream merges never conflict here.
+COPY rootfs/opt/image-service /opt/image-service
+RUN chmod +x /opt/image-service/entry.sh
+ENTRYPOINT ["/opt/image-service/entry.sh"]

@@ -1,0 +1,127 @@
+name: Sync with upstream
+
+# Daily: merge sproft/hass-claude, re-apply the plus overlay, bump the addon
+# version, push to main. Home Assistant then offers the update to users.
+# Conflicts outside overlay-managed files fall back to a PR for manual review.
+#
+# Security note: this workflow runs only on schedule/workflow_dispatch and
+# never interpolates untrusted event data into shell commands.
+#
+# Note: GitHub disables scheduled workflows after ~60 days without repo
+# activity; the sync's own commits normally keep it alive, and
+# workflow_dispatch is the manual fallback.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: https://github.com/sproft/hass-claude.git
+      # Files whose merge conflicts are auto-resolved as "take upstream,
+      # re-run scripts/apply-plus.sh". Keep in sync with apply-plus.sh.
+      MANAGED_FILES: |
+        claudecode/config.yaml
+        claudecode/Dockerfile
+        claudecode/CHANGELOG.md
+        README.md
+        repository.yaml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "upstream-sync[bot]"
+          git config user.email "upstream-sync@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch upstream main
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Up to date with upstream."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.check.outputs.new == 'true'
+        run: |
+          if git merge upstream/main --no-edit; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          conflicted="$(git diff --name-only --diff-filter=U)"
+          echo "Conflicted files:"
+          echo "$conflicted"
+
+          unmanaged=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! grep -qxF "$f" <<< "$MANAGED_FILES"; then
+              unmanaged="$unmanaged $f"
+            fi
+          done <<< "$conflicted"
+
+          if [ -n "$unmanaged" ]; then
+            echo "Unmanaged conflicts:$unmanaged"
+            git merge --abort
+            echo "result=manual" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # All conflicts are in overlay-managed files: take upstream's side,
+          # apply-plus.sh re-applies our changes in the next step.
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            git checkout --theirs -- "$f" || git checkout upstream/main -- "$f"
+            git add -- "$f"
+          done <<< "$conflicted"
+          git commit --no-edit
+          echo "result=clean" >> "$GITHUB_OUTPUT"
+
+      - name: Re-apply plus overlay and push
+        if: steps.check.outputs.new == 'true' && steps.merge.outputs.result == 'clean'
+        run: |
+          bash scripts/apply-plus.sh
+          if ! git diff --quiet; then
+            version="$(sed -n 's/^version: *"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p' claudecode/config.yaml | head -1)"
+            git add -A
+            git commit -m "chore: sync upstream, re-apply plus overlay (v$version)"
+          fi
+          git push origin HEAD:main
+
+      - name: Open issue for manual conflict resolution
+        if: steps.check.outputs.new == 'true' && steps.merge.outputs.result == 'manual'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Upstream sync needs manual conflict resolution"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq length)"
+          if [ "$existing" != "0" ]; then
+            echo "Issue already open"
+            exit 0
+          fi
+          gh issue create \
+            --title "$title" \
+            --body "$(printf 'Automatic merge of upstream sproft/hass-claude hit conflicts outside overlay-managed files.\n\nResolve manually:\n\n```\ngit fetch upstream main\ngit merge upstream/main   # resolve conflicts\nbash scripts/apply-plus.sh\ngit commit && git push origin main\n```\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)')"
