@@ -286,10 +286,14 @@ CMD ["/bin/bash", "-c", "\
     \"${SHELL_CMD[@]}\" \
 "]
 
+
 # --- claude-terminal-plus overlay ---
 # Image upload wrapper: serves the ingress UI on 7682, proxies the terminal
 # to the untouched upstream ttyd on 7681, saves pasted images to /data/images.
 # Kept as an append-only block so upstream merges never conflict here.
 COPY rootfs/opt/image-service /opt/image-service
 RUN chmod +x /opt/image-service/entry.sh
+# Overriding upstream's empty ENTRYPOINT is intentional: entry.sh backgrounds
+# the wrapper and then exec's the unchanged upstream CMD. Last one wins.
+# hadolint ignore=DL4004
 ENTRYPOINT ["/opt/image-service/entry.sh"]
