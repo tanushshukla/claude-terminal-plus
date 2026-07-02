@@ -146,6 +146,11 @@ const server = http.createServer((req, res) => {
     sendJson(res, 200, { status: 'ok', uploadDir: UPLOAD_DIR });
     return;
   }
+  if (pathname === '/favicon.ico') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
