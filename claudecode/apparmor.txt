@@ -90,4 +90,11 @@ profile claudecode flags=(attach_disconnected,mediate_deleted) {
   # it; unlike /data there is no broader /opt umbrella rule to cover it.
   /opt/npm-global/ r,
   /opt/npm-global/** ixmr,
+  # claude-terminal-plus overlay: image upload wrapper. entry.sh is the
+  # container ENTRYPOINT (executed by tini) and server.js is read by node,
+  # so the tree needs read + execute; without it Protection mode kills the
+  # app at boot with "exec /opt/image-service/entry.sh failed: Permission denied".
+  /opt/image-service/ r,
+  /opt/image-service/** ixmr,
+
 }

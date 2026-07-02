@@ -35,6 +35,7 @@ jobs:
         claudecode/config.yaml
         claudecode/Dockerfile
         claudecode/CHANGELOG.md
+        claudecode/apparmor.txt
         README.md
         repository.yaml
     steps:

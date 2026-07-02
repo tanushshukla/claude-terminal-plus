@@ -113,6 +113,29 @@ BANNER
   changed=1
 fi
 
+# --- apparmor.txt: allow executing the image-service overlay -----------------
+# Without this, HA's Protection mode denies tini's exec of entry.sh:
+#   [FATAL tini (7)] exec /opt/image-service/entry.sh failed: Permission denied
+APPARMOR="$ROOT/claudecode/apparmor.txt"
+if ! grep -q '/opt/image-service/' "$APPARMOR"; then
+  tmp="$(mktemp)"
+  awk '
+    /^}$/ && !done {
+      print "  # claude-terminal-plus overlay: image upload wrapper. entry.sh is the"
+      print "  # container ENTRYPOINT (executed by tini) and server.js is read by node,"
+      print "  # so the tree needs read + execute; without it Protection mode kills the"
+      print "  # app at boot with \"exec /opt/image-service/entry.sh failed: Permission denied\"."
+      print "  /opt/image-service/ r,"
+      print "  /opt/image-service/** ixmr,"
+      print ""
+      done=1
+    }
+    { print }
+  ' "$APPARMOR" > "$tmp"
+  mv "$tmp" "$APPARMOR"
+  changed=1
+fi
+
 # --- repository.yaml ---------------------------------------------------------
 if grep -q '^name: Claude Code for Home Assistant$' "$REPOYAML"; then
   sedi 's/^name: Claude Code for Home Assistant$/name: Claude Terminal Plus/' "$REPOYAML"
