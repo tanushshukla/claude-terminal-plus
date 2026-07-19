@@ -40,7 +40,10 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Resolve options with defaults.
-ENABLED="$(jq -r '.guard_privileged_actions // true' "$OPTIONS_FILE" 2>/dev/null || echo true)"
+# `.guard_privileged_actions // true` is WRONG: jq's // treats a literal false
+# as absent and returns true, so the option could never turn the guard off.
+# Only an explicit false disables it.
+ENABLED="$(jq -r 'if .guard_privileged_actions == false then "false" else "true" end' "$OPTIONS_FILE" 2>/dev/null || echo true)"
 case "$ENABLED" in false) ENABLED=false ;; *) ENABLED=true ;; esac
 # Lower-case list entries so a mixed-case config entry still matches (the hook
 # lower-cases the incoming domain.service before looking it up).

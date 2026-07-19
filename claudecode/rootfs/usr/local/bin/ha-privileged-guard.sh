@@ -58,7 +58,10 @@ enabled=true
 extra_deny='[]'
 extra_confirm='[]'
 if [ -r "$CONFIG" ]; then
-  e="$(jq -r '.enabled // true' "$CONFIG" 2>/dev/null || echo true)"
+  # Note: `.enabled // true` is WRONG here - jq's // treats a literal false as
+  # "absent" and would return true, so the guard could never be switched off.
+  # Only an explicit enabled:false disables; anything else stays on.
+  e="$(jq -r 'if .enabled == false then "false" else "true" end' "$CONFIG" 2>/dev/null || echo true)"
   [ "$e" = "false" ] && enabled=false
   extra_deny="$(jq -c '.deny // []' "$CONFIG" 2>/dev/null || echo '[]')"
   extra_confirm="$(jq -c '.confirm // []' "$CONFIG" 2>/dev/null || echo '[]')"
