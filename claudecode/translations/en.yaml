@@ -36,6 +36,26 @@ configuration:
     description: >-
       Automatically check for and install Claude Code updates on app startup.
       Keeps Claude Code current without requiring app version bumps.
+  guard_privileged_actions:
+    name: Enforce Privileged-action Guard
+    description: >-
+      Enforce a safety boundary that blocks or asks before Claude runs
+      destructive Home Assistant actions (stopping Core, disabling the Supervisor
+      watchdog, rebooting or shutting down the host, OS updates) and requires
+      human confirmation for a full restart. Enforced by the app, not just by
+      instructions. Recommended on.
+  disallow_actions:
+    name: Blocked Actions
+    description: >-
+      Home Assistant actions Claude may never run on its own, as domain.service
+      identifiers (for example homeassistant.stop, hassio.host_reboot). These are
+      hard-blocked while the guard is enabled.
+  confirm_actions:
+    name: Confirm-first Actions
+    description: >-
+      Actions that require explicit human confirmation before running, as
+      domain.service identifiers. homeassistant.restart is included by default so
+      a full restart is never triggered without approval.
 
 network:
   7681/tcp: Web Terminal (ttyd)
