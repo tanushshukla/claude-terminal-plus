@@ -223,7 +223,7 @@ CMD ["/bin/bash", "-c", "\
   THEME=$(jq -r '.terminal_theme // \"dark\"' /data/options.json) && \
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   AUTO_CONTINUE=$(jq -r '.auto_continue // false' /data/options.json) && \
-  ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
+  ENABLE_MCP=$(jq -r 'if .enable_mcp == false then false else true end' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
   SETTINGS_FILE=/root/.claude/settings.json && \

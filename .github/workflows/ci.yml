@@ -279,6 +279,14 @@ jobs:
             echo "::error::auto_continue launch word-split: 'bash -ic cc' did not survive as one argument"
             exit 1
           fi
+          # This fixture sets enable_mcp:false, so the boot must actually disable
+          # MCP. Regression guard: `jq -r '.enable_mcp // true'` treated a literal
+          # false as absent and returned true, leaving MCP on when it was off.
+          grep -q '\[INFO\] MCP disabled' smoke/boot-autocontinue.log
+          if grep -q '\[INFO\] MCP configured' smoke/boot-autocontinue.log; then
+            echo "::error::enable_mcp is false but MCP was still configured"
+            exit 1
+          fi
 
           # session_persistence ON, auto_continue OFF: plain tmux session, no cc.
           mkdir -p smoke/data-noautocontinue
