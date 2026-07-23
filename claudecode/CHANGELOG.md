@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.78] - 2026-07-19
+
+### Fixed
+- **`enable_mcp: false` did not actually disable the MCP integration.** The boot script read the option with `jq -r '.enable_mcp // true'`. jq's `//` operator falls through to the default when the left side is `null` OR `false`, so a literal `false` returned `true`: the guard `if [ "$ENABLE_MCP" = "true" ]` always passed, the Home Assistant MCP server was registered in `.claude.json`, and the read-only tools were pre-authorized, regardless of the setting. The read now uses `jq -r 'if .enable_mcp == false then false else true end'`, so only an explicit `false` disables it (absent or `true` keeps MCP on, matching the default). The other boolean options are unaffected: they default to `false`, and `X // false` yields `false` for both a literal `false` and an absent key, so they were already correct.
+
+### CI
+- The `auto_continue` boot smoke (which already runs with `enable_mcp: false`) now asserts the boot logs `[INFO] MCP disabled` and not `[INFO] MCP configured`, guarding against the `// true` regression.
+
 ## [1.2.76] - 2026-06-26
 
 ### Fixed
