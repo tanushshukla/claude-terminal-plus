@@ -231,6 +231,16 @@ CMD ["/bin/bash", "-c", "\
   mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
   { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
   { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
+  STALE_RULES=$(jq -r '[(.permissions.allow // [])[] | select((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))] | join(\", \")' \"$SETTINGS_FILE\" 2>/dev/null || echo '') && \
+  if [ -n \"$STALE_RULES\" ]; then \
+    if jq '.permissions.allow = [ (.permissions.allow // [])[] | select((((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))) | not) ]' \"$SETTINGS_FILE\" > /tmp/settings.prune 2>/dev/null && jq -e . /tmp/settings.prune >/dev/null 2>&1; then \
+      mv /tmp/settings.prune \"$SETTINGS_FILE\" && \
+      echo \"[INFO] Removed deprecated permission rules that stop Claude Code launching: $STALE_RULES\"; \
+    else \
+      rm -f /tmp/settings.prune; \
+      echo '[WARN] Failed to remove deprecated Glob()/Grep() permission rules from settings.json'; \
+    fi; \
+  fi && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
     if jq '.mcpServers.homeassistant = {\"type\":\"stdio\",\"command\":\"hass-mcp\"} | del(.mcpServers.playwright)' \"$CLAUDE_JSON\" > /tmp/claude.tmp && jq -e . /tmp/claude.tmp >/dev/null 2>&1; then \
       cp /tmp/claude.tmp \"$PERSIST_DIR/.claude.json.tmp\" && mv \"$PERSIST_DIR/.claude.json.tmp\" \"$PERSIST_DIR/.claude.json\"; \
@@ -238,7 +248,7 @@ CMD ["/bin/bash", "-c", "\
       echo '[WARN] Failed to register MCP server in .claude.json'; \
     fi; \
     rm -f /tmp/claude.tmp; \
-    ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\",\"Glob(/homeassistant/**)\",\"Glob(/config/**)\",\"Grep(/homeassistant/**)\",\"Grep(/config/**)\"]' && \
+    ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\"]' && \
     if jq --argjson tools \"$ALLOWED_TOOLS\" '.permissions.allow = ($tools + (.permissions.allow // []) | unique)' \"$SETTINGS_FILE\" > /tmp/settings.tmp; then \
       mv /tmp/settings.tmp \"$SETTINGS_FILE\" && \
       echo '[INFO] MCP configured with Home Assistant integration' && \

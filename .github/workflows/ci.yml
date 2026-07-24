@@ -177,6 +177,17 @@ jobs:
           test -x smoke/data/npm-global/bin/claude
           test -f smoke/data/npm-global/.seed-complete
           grep -q '\[INFO\] Seeded /data/npm-global' smoke/boot.log
+          # Regression guard for #33: the pre-authorized tool list must never
+          # ship Glob()/Grep() permission rules again. Current Claude Code CLIs
+          # reject them (Read(path) already covers Glob and Grep), which stops
+          # the CLI launching and produces a reconnect loop.
+          jq -e '[(.permissions.allow // [])[] | select(startswith("Glob(") or startswith("Grep("))] | length == 0' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null \
+            || { echo "::error::settings.json still ships Glob()/Grep() permission rules (issue #33)"; exit 1; }
+          # The Read rules that actually grant the access must still be there.
+          jq -e '((.permissions.allow // []) | index("Read(/homeassistant/**)")) != null
+                 and ((.permissions.allow // []) | index("Read(/config/**)")) != null' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null
           # Regression guard for #20: the MCP-registration step must land the
           # config on the PERSISTENT volume, written through the
           # /root/.claude.json symlink to its target. The old code did
@@ -314,6 +325,50 @@ jobs:
             echo "::error::auto_continue is off but the cc launch command is present"
             exit 1
           fi
+
+      - name: Boot repairs an install already broken by Glob/Grep rules (issue #33)
+        run: |
+          set -euo pipefail
+          # An install that already ran an affected release has the four rules
+          # baked into the PERSISTENT settings.json. Dropping them from the
+          # shipped list is not enough on its own, because the pre-authorization
+          # merge only ever adds. The boot must actively prune them, and must do
+          # so even with enable_mcp:false, which never reaches that merge.
+          mkdir -p smoke/data-glob smoke/ha-glob/.claudecode
+          cat > smoke/data-glob/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300
+          }
+          EOF
+          cat > smoke/ha-glob/.claudecode/settings.json <<'EOF'
+          {"permissions":{"allow":[
+            "Read(/homeassistant/**)","Read(/config/**)",
+            "Glob(/homeassistant/**)","Glob(/config/**)",
+            "Grep(/homeassistant/**)","Grep(/config/**)",
+            "Glob(/my/own/**)"
+          ]}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-glob:/data:rw" \
+            -v "$PWD/smoke/ha-glob:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-glob.log
+          grep -q '\[INFO\] MCP disabled' smoke/boot-glob.log
+          grep -q '\[INFO\] Removed deprecated permission rules' smoke/boot-glob.log
+          S=smoke/ha-glob/.claudecode/settings.json
+          jq -e '[(.permissions.allow // [])[] | select(startswith("Glob(") or startswith("Grep("))] | length == 0' "$S" >/dev/null \
+            || { echo "::error::stale Glob()/Grep() rules were not pruned from an existing settings.json (issue #33)"; exit 1; }
+          jq -e '((.permissions.allow // []) | index("Read(/homeassistant/**)")) != null
+                 and ((.permissions.allow // []) | index("Read(/config/**)")) != null' "$S" >/dev/null \
+            || { echo "::error::pruning removed the Read rules it was supposed to keep"; exit 1; }
 
       - name: Boot smoke covers the failure-tail path on a forced timeout
         run: |
