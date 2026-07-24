@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.82] - 2026-07-24
+
+### Fixed
+- **`working_directory` did nothing.** The option has shipped since early versions and is shown on the Configuration tab in all three languages, but no code ever read it: the boot script hard-coded `cd /homeassistant` before launching the terminal. Setting it to anything else was silently ignored. The boot script now reads the option and starts the terminal there. If the directory does not exist the boot logs a warning and falls back to `/homeassistant`, so a typo cannot leave you without a working terminal.
+- **`claude_update_timeout` had no label in the Home Assistant UI.** The option was missing from `translations/en.yaml`, `es.yaml` and `pt-BR.yaml`, so Home Assistant displayed the bare key `claude_update_timeout` with no name or description. Added to all three, including the valid range (30 to 1800) and the fact that it only applies when `auto_update_claude` is on.
+- **The `c` and `cc` aliases ran dead code that dirtied `settings.json`.** Both called an `update_mcp_token` function that wrote `.mcpServers.homeassistant.env.HASS_TOKEN` into `/root/.claude/settings.json`. That refreshed nothing: the MCP server is registered in `.claude.json` (as `{"type":"stdio","command":"hass-mcp"}`, with no `env` block), and `hass-mcp` takes its credentials from the `HA_TOKEN` and `HA_URL` variables the boot script exports. So every launch injected an `mcpServers` key into a settings file that has no such setting. The function is removed and the aliases now run `claude` directly. Because that key persists in `/homeassistant/.claudecode/settings.json`, the boot script also deletes it if an older version wrote one, for the same reason the Glob/Grep prune in 1.2.79 was needed: this app's settings file is persistent, so cleaning up shipped mistakes needs an active removal, not just a code change.
+
+### Notes
+- All three were found while rewriting the app README and checking every documented option against the code. None of them broke anything outright, which is why they survived: a dead option looks like a working one until you test it, and a stray key in a JSON file is invisible until something validates that file.
+
 ## [1.2.80] - 2026-07-24
 
 ### Added

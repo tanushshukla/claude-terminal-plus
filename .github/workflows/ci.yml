@@ -50,6 +50,50 @@ jobs:
               exit 1
           fi
 
+      - name: every option has a translation in every language
+        # An option with no translation shows up in the Home Assistant UI as a
+        # bare key with no name or description (claude_update_timeout shipped
+        # that way until 1.2.82).
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          opts = set(yaml.safe_load(open("claudecode/config.yaml"))["options"])
+          bad = False
+          for lang in ("en", "es", "pt-BR"):
+              path = f"claudecode/translations/{lang}.yaml"
+              keys = set((yaml.safe_load(open(path, encoding="utf-8")) or {}).get("configuration", {}))
+              missing, extra = sorted(opts - keys), sorted(keys - opts)
+              if missing:
+                  print(f"::error file={path}::options with no translation: {missing}")
+                  bad = True
+              if extra:
+                  print(f"::error file={path}::translations for options that no longer exist: {extra}")
+                  bad = True
+          if bad:
+              sys.exit(1)
+          print(f"ok: {len(opts)} options translated in en, es, pt-BR")
+          PY
+
+      - name: every option is actually read by the boot script
+        # working_directory was accepted, documented and translated for many
+        # releases while nothing read it (fixed in 1.2.82). A configurable option
+        # that no code consults is worse than no option at all.
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          opts = yaml.safe_load(open("claudecode/config.yaml"))["options"]
+          # The boot script lives in the Dockerfile CMD; the guard options are
+          # consumed by the rootfs helper scripts it calls.
+          sources = ["claudecode/Dockerfile"] + sorted(glob.glob("claudecode/rootfs/usr/local/bin/*.sh"))
+          blob = "".join(open(p, encoding="utf-8").read() for p in sources)
+          unread = [o for o in opts if f".{o}" not in blob]
+          if unread:
+              print(f"::error file=claudecode/config.yaml::options never read by any boot code: {sorted(unread)}")
+              print(f"searched: {sources}")
+              sys.exit(1)
+          print(f"ok: all {len(opts)} options are read by the boot script or a helper")
+          PY
+
       - name: options and schema keys are in sync
         run: |
           python3 - <<'PY'

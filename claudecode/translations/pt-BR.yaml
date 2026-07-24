@@ -33,6 +33,13 @@ configuration:
       retomar sua sessão anterior em vez de abrir um shell. Só tem efeito quando a
       Persistência de Sessão está habilitada. É seguro sem sessão anterior
       (inicia uma nova).
+  claude_update_timeout:
+    name: Tempo Limite de Atualização (segundos)
+    description: >-
+      Por quanto tempo a atualização do Claude Code em segundo plano pode ser
+      executada antes de ser interrompida (30-1800). Aumente em conexões lentas
+      se o registro indicar que a atualização expirou. Usado apenas quando a
+      atualização automática do Claude Code está ativada.
   auto_update_claude:
     name: Atualização Automática do Claude Code
     description: >-
