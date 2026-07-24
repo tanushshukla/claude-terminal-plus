@@ -186,6 +186,7 @@ Change these on the app's **Configuration** tab.
 | `terminal_font_size` | `14` | Terminal font size in pixels, 10 to 24 |
 | `auto_update_claude` | `false` | Download the newest Claude Code release in the background on every start |
 | `claude_update_timeout` | `300` | Seconds that background update may take before it is stopped (30 to 1800) |
+| `working_directory` | `/homeassistant` | Folder the terminal opens in |
 | `enable_mcp` | `true` | Let Claude read entity states and call services, not just edit files |
 | `guard_privileged_actions` | `true` | Enforce the safety guard described above |
 | `disallow_actions` | six entries | Actions Claude may never run. Your entries **add** to a built-in baseline |
@@ -195,7 +196,7 @@ The `disallow_actions` baseline is `homeassistant.stop`, `supervisor.core_stop`,
 
 `enable_mcp` behaves asymmetrically, which is worth knowing before you touch it. Turning it **on** also pre-approves Claude reading files in your config folder, so it stops asking about every file. Turning it back **off** undoes neither: the connection and the read pre-approvals stay in your settings until you remove them by hand. On a fresh install that has never run with it on, Claude has no entity access and asks before opening each file.
 
-> `working_directory` appears on the Configuration tab but is currently ignored. The terminal always opens in `/homeassistant`.
+There is one more option, `working_directory`, which sets the folder the terminal opens in. It defaults to `/homeassistant` and most people never need to change it. If you point it somewhere that does not exist, the app logs a warning and opens in `/homeassistant` instead.
 
 ---
 
