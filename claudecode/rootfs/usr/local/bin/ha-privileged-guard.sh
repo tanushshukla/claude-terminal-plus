@@ -267,7 +267,7 @@ EOF
 [ -n "$decision" ] || exit 0
 
 if [ "$decision" = "deny" ]; then
-  reason="Blocked by the Home Assistant privileged-action guard: '${matched}' can take Home Assistant offline or require physical access to recover, so it is not allowed autonomously. If this is genuinely required, ask the user to perform it themselves. Prefer reloading a specific YAML domain (for example automation.reload) over stopping or rebooting. Do not try to route around this block with an alternate command."
+  reason="Blocked by the Home Assistant privileged-action guard: '${matched}' can take Home Assistant offline or require physical access to recover, so it is not allowed autonomously. Prefer reloading a specific YAML domain (for example automation.reload) over stopping or rebooting. If this is genuinely required, say so plainly and let the user do it from the Home Assistant UI (Settings > System), or tell them they can relax the policy themselves via the app's guard_privileged_actions / disallow_actions options. Do NOT route around this block yourself, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing it: naming the action and letting them decide is the whole point of the boundary."
 else
   reason="The Home Assistant privileged-action guard requires human confirmation for '${matched}'. Explain to the user what you need and why, and let them approve. A full restart causes a short outage; prefer reloading a specific YAML domain if that is enough. After any state-changing call, re-read the entity to confirm it actually took effect rather than trusting the call's return."
 fi

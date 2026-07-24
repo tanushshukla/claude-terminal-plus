@@ -134,6 +134,8 @@ It is a guardrail against mistakes, not a security sandbox. See [Settings](#sett
 
 **When you actually want a blocked action to happen**, do it yourself in the Home Assistant UI, or turn the guard off with `guard_privileged_actions: false`. Adding one of the blocked actions to `confirm_actions` does not downgrade it, because the block list is built into the app and is checked first. See [Settings](#settings).
 
+Claude is told to point you at those routes rather than hand you a command that works around the block, even if you ask it how. That is deliberate: the block exists so a privileged action gets a decision from you, and an assistant that volunteers the bypass in the same breath turns that decision back into a formality.
+
 ---
 
 ## Everyday use
