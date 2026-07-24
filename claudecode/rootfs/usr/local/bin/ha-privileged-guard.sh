@@ -46,6 +46,34 @@ CONFIG="${HA_GUARD_CONFIG:-/root/.claude/ha-guard.json}"
 BUILTIN_DENY="homeassistant.stop supervisor.core_stop supervisor.watchdog_disable hassio.host_reboot hassio.host_shutdown hassio.supervisor_restart hassio.os_update"
 BUILTIN_CONFIRM="homeassistant.restart"
 
+# The authority part of a URL pointing at the Supervisor API, used by _api()
+# below. Alternatives, in order: any explicit http(s) URL; the `supervisor` and
+# `hassio` hostnames written without a scheme; the Supervisor's fixed raw
+# address on the add-on network; and a shell variable holding the base URL.
+_API_AUTHORITY='(https?://[^[:space:]]*|supervisor|hassio|172\.30\.32\.2|[$]\{?[a-z_][a-z0-9_]*\}?)'
+
+# Invocation of the `ha` CLI, up to but not including its command group. The
+# `ha` must sit at a command position -- the start of the command, or right
+# after a shell separator (; & | ( ) { } or a backtick) -- so the same verb
+# quoted as data inside an echo, a grep pattern, a comment, a heredoc body or a
+# doc string is NOT matched (`echo 'run: ha core restart'`, `grep 'ha host
+# reboot' file`). That data-vs-command ambiguity is the main false-positive
+# source for a text matcher; anchoring on a separator removes most of it. The
+# cost is that `ha` reached only through a wrapper (`sudo ha ...`, `sh -c '...'`,
+# `xargs ha ...`) is missed, which this app never needs and the MCP path and
+# deny floor still cover for the direct forms. Global flags may sit between the
+# binary and the command group (`ha --no-progress core stop`), so they are
+# skipped here.
+_HA_CLI='(^|[|;&(){}`])[[:space:]]*ha([[:space:]]+--[a-z-]+([= ][^[:space:]]+)?)*[[:space:]]+'
+# The CLI's command groups carry documented cobra aliases, so `ha ha stop`,
+# `ha homeassistant stop`, `ha su restart`, `ha ho reboot` and `ha hassos update`
+# are all real spellings of the same operations. Matching only the canonical
+# name left every alias unguarded, including past the settings deny floor.
+_HA_CORE='(core|homeassistant|home-assistant|ha)'
+_HA_HOST='(host|ho)'
+_HA_SUPERVISOR='(supervisor|super|su)'
+_HA_OS='(os|hassos)'
+
 # jq parses the hook payload. If it is somehow unavailable we cannot read the
 # arguments to make a decision, so defer (the settings-level permissions.deny
 # floor still covers the worst shell commands). jq is a hard image dependency.
@@ -63,16 +91,27 @@ if [ -r "$CONFIG" ]; then
   # Only an explicit enabled:false disables; anything else stays on.
   e="$(jq -r 'if .enabled == false then "false" else "true" end' "$CONFIG" 2>/dev/null || echo true)"
   [ "$e" = "false" ] && enabled=false
-  extra_deny="$(jq -c '.deny // []' "$CONFIG" 2>/dev/null || echo '[]')"
-  extra_confirm="$(jq -c '.confirm // []' "$CONFIG" 2>/dev/null || echo '[]')"
+  # Keep only the string entries. A wrong-typed value (.deny as a string, or an
+  # array holding a number) must not be allowed to reach the union below: it
+  # would make that jq expression error out and take the hard-coded baseline
+  # down with it. Filtering here means the union can only ever ADD to the
+  # baseline, which is the documented contract.
+  extra_deny="$(jq -c '[ (.deny // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
+  extra_confirm="$(jq -c '[ (.confirm // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
 fi
 [ "$enabled" = "true" ] || exit 0
 
-# Effective, deduped, lower-cased lists = baseline + user additions.
+# Effective, deduped, lower-cased lists = baseline + user additions. The
+# fallback is the BASELINE, never an empty list: if anything at all goes wrong
+# building the union the guard must still enforce its floor rather than wave
+# every action through.
+baseline_only() { jq -cn --arg b "$1" '$b | ascii_downcase | split(" ")'; }
 deny_all="$(jq -cn --argjson x "$extra_deny" --arg b "$BUILTIN_DENY" \
-  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null || echo '[]')"
+  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
+  || baseline_only "$BUILTIN_DENY")"
 confirm_all="$(jq -cn --argjson x "$extra_confirm" --arg b "$BUILTIN_CONFIRM" \
-  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null || echo '[]')"
+  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
+  || baseline_only "$BUILTIN_CONFIRM")"
 
 input="$(cat)"
 tool="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)"
@@ -97,38 +136,94 @@ derive_bash_actions() {
   cmd="${cmd//$'\n'/ }"    # remaining newlines to spaces
   _m() { printf '%s' "$cmd" | grep -Eiq -- "$1"; }
 
+  # Does the line actually make an HTTP request, or invoke the `ha` CLI? The
+  # path- and body-shaped patterns below (a REST /services/ segment, a Supervisor
+  # /core/stop path, a watchdog:false body) also occur verbatim inside innocent
+  # reads: `grep supervisor/os/update file`, `rg services/homeassistant/stop`,
+  # `grep watchdog=false home-assistant.log`. Gating those derivations on the
+  # presence of an HTTP client (or a URL scheme, or an `ha` invocation) keeps the
+  # reads allowed while still catching every real call. The `ha` subcommand
+  # patterns are self-anchored on `ha` at a command position and are not gated.
+  local has_http=false watchdog_off=false
+  { _m '(^|[^[:alnum:]_])(curl|wget|httpie|xh|nc|ncat|socat|aria2c|lynx|links|fetch)([^[:alnum:]_]|$)' \
+    || _m 'https?://'; } && has_http=true
+
+  # Match an HTTP request to the Supervisor API for a given path regex,
+  # independently of how the host is addressed. The container can reach the
+  # Supervisor as http://supervisor/, by its raw IP 172.30.32.2, or through a
+  # variable holding the base URL, so anchoring on the literal text
+  # "supervisor/core/..." (as this did originally) missed most real requests.
+  # Every /core/* lifecycle endpoint is also mirrored by a legacy
+  # /homeassistant/* one with identical effect, and the incident in issue #29
+  # went through that family, so both spellings are matched. Only fires when the
+  # line is an actual HTTP call, so `cat /homeassistant/restart.yaml` (this app's
+  # config mount and working directory) is never read as a Supervisor call.
+  _api() { [ "$has_http" = true ] && _m "$_API_AUTHORITY$1"'([^[:alnum:]_.-]|$)'; }
+
+  # A bashio helper call. The HA base image ships bashio and every add-on script
+  # uses it; these are single tokens with no URL and no `ha ` prefix, e.g.
+  # `bashio::core.stop`.
+  _bashio() { _m '(^|[^[:alnum:]_])bashio::'"$1"'([^[:alnum:]_]|$)'; }
+
   # REST service calls of any domain: .../services/<domain>/<service>. Derive
   # the canonical id and let the lists decide (covers homeassistant.stop,
-  # hassio.host_reboot, etc. reached via the Core REST API).
-  while IFS= read -r seg; do
-    [ -n "$seg" ] || continue
-    s="${seg##*/}"; d="${seg%/*}"; d="${d##*/}"
-    [ -n "$d" ] && [ -n "$s" ] && out="$out
+  # hassio.host_reboot, etc. reached via the Core REST API). HTTP context only.
+  if [ "$has_http" = true ]; then
+    while IFS= read -r seg; do
+      [ -n "$seg" ] || continue
+      s="${seg##*/}"; d="${seg%/*}"; d="${d##*/}"
+      [ -n "$d" ] && [ -n "$s" ] && out="$out
 ${d}.${s}"
-  done < <(printf '%s' "$cmd" | grep -oiE 'services/[a-z_]+/[a-z_]+' | tr '[:upper:]' '[:lower:]')
+    done < <(printf '%s' "$cmd" | grep -oiE 'services/[a-z_]+/[a-z_]+' | tr '[:upper:]' '[:lower:]')
+  fi
 
-  # Restart Core (ha CLI).
-  _m '(^|[^[:alnum:]_])ha[[:space:]]+core[[:space:]]+restart([^[:alnum:]_]|$)' && out="$out
+  # Restart Core. Confirmation tier, not a block: a restart is sometimes
+  # genuinely needed, it just needs a human to know it is coming. Every verb here
+  # matches the `ha` CLI (with its documented cobra aliases and any leading
+  # global flags), the /core|/homeassistant REST path, and the bashio helper.
+  { _m "$_HA_CLI$_HA_CORE"'[[:space:]]+restart([^[:alnum:]_]|$)' \
+    || _api '/(core|homeassistant)/restart' \
+    || _bashio 'core\.restart'; } && out="$out
 homeassistant.restart"
-  # Stop Core (ha CLI or the Supervisor API).
-  { _m '(^|[^[:alnum:]_])ha[[:space:]]+core[[:space:]]+stop([^[:alnum:]_]|$)' || _m 'supervisor/core/stop'; } && out="$out
+  # Stop Core -- the second half of the sequence that left the reporter's system
+  # needing a power cycle.
+  { _m "$_HA_CLI$_HA_CORE"'[[:space:]]+stop([^[:alnum:]_]|$)' \
+    || _api '/(core|homeassistant)/stop' \
+    || _bashio 'core\.stop'; } && out="$out
 supervisor.core_stop"
-  # Disable the Supervisor watchdog. Matched only in an assignment/flag form so
-  # a plain log grep that merely mentions "watchdog" is not blocked.
+  # Disable the Supervisor watchdog. The unambiguous CLI flags (--no-watchdog,
+  # --watchdog=false) are always honoured. The JSON value form ("watchdog":
+  # false) is only ever sent over an HTTP call (the `ha` CLI uses the --watchdog
+  # flag, not a JSON body), so it is honoured only when an HTTP client is
+  # present -- that keeps `ha addons info | grep 'watchdog: false'` and
+  # `grep watchdog=false log` (pure reads) allowed. The quote class allows a
+  # backslash because a JSON body written inside a double-quoted shell string
+  # arrives as {\"watchdog\": false}, the exact shape the incident used.
   { _m '[-][-]no[_-]?watchdog' \
-    || _m '["'"'"']?watchdog["'"'"']?[[:space:]]*[:=][[:space:]]*(false|0|off|no|disabled?)' \
-    || _m '[-][-]watchdog[[:space:]=]+(false|0|off|no)'; } && out="$out
+    || _m '[-][-]watchdog[[:space:]=]+(false|0|off|no)'; } && watchdog_off=true
+  if [ "$watchdog_off" = false ] && [ "$has_http" = true ]; then
+    _m '[\"'"'"']*watchdog[\"'"'"']*[[:space:]]*[:=][[:space:]]*[\"'"'"']*(false|0|off|no|disabled?)' && watchdog_off=true
+  fi
+  [ "$watchdog_off" = true ] && out="$out
 supervisor.watchdog_disable"
-  # Reboot / shut down the host (ha CLI or Supervisor API).
-  { _m '(^|[^[:alnum:]_])ha[[:space:]]+host[[:space:]]+reboot([^[:alnum:]_]|$)' || _m 'supervisor/host/reboot'; } && out="$out
+  # Reboot / shut down the host (ha CLI + aliases, Supervisor API, or bashio).
+  { _m "$_HA_CLI$_HA_HOST"'[[:space:]]+reboot([^[:alnum:]_]|$)' \
+    || _api '/host/reboot' \
+    || _bashio 'host\.reboot'; } && out="$out
 hassio.host_reboot"
-  { _m '(^|[^[:alnum:]_])ha[[:space:]]+host[[:space:]]+shutdown([^[:alnum:]_]|$)' || _m 'supervisor/host/shutdown'; } && out="$out
+  { _m "$_HA_CLI$_HA_HOST"'[[:space:]]+shutdown([^[:alnum:]_]|$)' \
+    || _api '/host/shutdown' \
+    || _bashio 'host\.shutdown'; } && out="$out
 hassio.host_shutdown"
-  # Stop / restart / reload the Supervisor (governed as one id).
-  { _m '(^|[^[:alnum:]_])ha[[:space:]]+supervisor[[:space:]]+(restart|stop|reload)([^[:alnum:]_]|$)' || _m 'supervisor/(restart|reload)'; } && out="$out
+  # Stop / restart the Supervisor (governed as one id). `reload` is a distinct,
+  # harmless refresh and is deliberately NOT matched here.
+  { _m "$_HA_CLI$_HA_SUPERVISOR"'[[:space:]]+(restart|stop)([^[:alnum:]_]|$)' \
+    || _api '/supervisor/(restart|stop)' \
+    || _bashio 'supervisor\.restart'; } && out="$out
 hassio.supervisor_restart"
-  # OS / host update (ha CLI or Supervisor API).
-  { _m '(^|[^[:alnum:]_])ha[[:space:]]+os[[:space:]]+update([^[:alnum:]_]|$)' || _m 'supervisor/os/update'; } && out="$out
+  # OS / host update (ha CLI + hassos alias, or Supervisor API).
+  { _m "$_HA_CLI$_HA_OS"'[[:space:]]+update([^[:alnum:]_]|$)' \
+    || _api '/os/update'; } && out="$out
 hassio.os_update"
 
   printf '%s\n' "$out"

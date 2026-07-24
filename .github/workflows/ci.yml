@@ -468,6 +468,34 @@ jobs:
           expect "bash ha core (cont) stop"           '{"tool_name":"Bash","tool_input":{"command":"ha core \\\n  stop"}}'                                                 deny
           # Bare mention in a read command must NOT be blocked (false-positive guard).
           expect "bash grep mentions stop (safe)"     '{"tool_name":"Bash","tool_input":{"command":"ha core logs | grep -i homeassistant.stop"}}'                        allow
+          # Host-agnostic Supervisor addressing + the /homeassistant/* alias family
+          # (the exact endpoint the issue #29 incident used). Matching only the
+          # supervisor hostname and only /core/* left all of these open.
+          expect "homeassistant/* alias stop"         '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/homeassistant/stop"}}'                 deny
+          expect "raw-IP core stop"                   '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://172.30.32.2/core/stop"}}'                         deny
+          expect "var-addressed homeassistant stop"   '{"tool_name":"Bash","tool_input":{"command":"curl -X POST \"$SUPERVISOR_API/homeassistant/stop\""}}'               deny
+          expect "homeassistant/restart alias (ask)"  '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/homeassistant/restart"}}'              ask
+          # ha CLI cobra aliases + a leading global flag must not bypass the hook.
+          expect "ha ha stop alias"                   '{"tool_name":"Bash","tool_input":{"command":"ha ha stop"}}'                                                         deny
+          expect "ha homeassistant stop alias"        '{"tool_name":"Bash","tool_input":{"command":"ha homeassistant stop"}}'                                              deny
+          expect "ha ho reboot alias"                 '{"tool_name":"Bash","tool_input":{"command":"ha ho reboot"}}'                                                       deny
+          expect "ha su restart alias"                '{"tool_name":"Bash","tool_input":{"command":"ha su restart"}}'                                                      deny
+          expect "ha hassos update alias"             '{"tool_name":"Bash","tool_input":{"command":"ha hassos update"}}'                                                   deny
+          expect "ha --flag core stop"                '{"tool_name":"Bash","tool_input":{"command":"ha --no-progress core stop"}}'                                         deny
+          # bashio helper vector (the base image ships bashio).
+          expect "bashio core.stop"                   '{"tool_name":"Bash","tool_input":{"command":"bashio::core.stop"}}'                                                  deny
+          # False-positive guards: a denied verb quoted as DATA (echo/grep/cat of a
+          # config path, a watchdog value in a log grep) must stay allowed, or users
+          # will disable the guard. The `ha` verb is only matched at a command
+          # position, and the watchdog value form only with an HTTP client present.
+          expect "echo mentions restart (safe)"       '{"tool_name":"Bash","tool_input":{"command":"echo \"reminder: run ha core restart later\""}}'                      allow
+          expect "cat homeassistant path (safe)"      '{"tool_name":"Bash","tool_input":{"command":"cat /homeassistant/restart.yaml"}}'                                    allow
+          expect "grep watchdog=false log (safe)"     '{"tool_name":"Bash","tool_input":{"command":"grep -c watchdog=false /homeassistant/home-assistant.log"}}'          allow
+          # A well-formed policy file with a wrong-typed .deny must fall back to the
+          # hard-coded baseline (fail closed), not collapse the list to empty.
+          printf '%s' '{"enabled":true,"deny":"homeassistant.stop","confirm":[]}' > smoke/guard/ha-guard.json
+          expect "wrong-typed deny fails closed"      '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    deny
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.supervisor_restart","hassio.os_update"],"confirm":["homeassistant.restart"]}' > smoke/guard/ha-guard.json
           # With the guard disabled, a denied action must pass through.
           printf '%s' '{"enabled":false,"deny":["homeassistant.stop"],"confirm":[]}' > smoke/guard/ha-guard.json
           expect "disabled guard allows stop"         '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    allow
@@ -482,3 +510,55 @@ jobs:
             echo "::error::baseline not enforced when policy file is missing (got: $missing)"
             exit 1
           fi
+
+      - name: Privileged-action guard configurator (issue #29)
+        run: |
+          set -euo pipefail
+          # Drive the real ha-guard-configure.sh inside the built image against a
+          # settings file that already holds USER-owned deny rules and a USER hook,
+          # asserting: enable wires our hook+floor and keeps the user's; disable
+          # removes only ours and preserves the user's (regression guard: the old
+          # `select($floor|index(.))` wiped the user's entire deny list); and a
+          # corrupt settings.json is backed up + reset, not silently skipped.
+          run_cfg() { # $1 options-json ; edits smoke/cfg/settings.json in place
+            printf '%s' "$1" > smoke/cfg/options.json
+            docker run --rm \
+              -e HA_GUARD_OPTIONS=/cfg/options.json \
+              -e HA_GUARD_CONFIG=/cfg/ha-guard.json \
+              -v "$PWD/smoke/cfg:/cfg" \
+              --entrypoint /usr/local/bin/ha-guard-configure.sh \
+              hass-claude-test:amd64 /cfg/settings.json
+          }
+          S=smoke/cfg/settings.json
+          H=/usr/local/bin/ha-privileged-guard.sh
+          assert() { # $1 desc  $2 jq-filter-over-$S (must be true)
+            if jq -e "$2" "$S" >/dev/null 2>&1; then echo "PASS $1"; else
+              echo "::error::configurator '$1' failed; settings=$(cat "$S")"; exit 1; fi
+          }
+          rm -rf smoke/cfg; mkdir -p smoke/cfg
+          cat > "$S" <<'JSON'
+          {"permissions":{"deny":["Bash(rm -rf /:*)","Bash(curl evil.example:*)"]},
+           "hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/user-audit.sh"}]}]}}
+          JSON
+          run_cfg '{}'
+          assert "enable wires guard hook"      '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
+          assert "enable adds deny floor"       '(.permissions.deny|index("Bash(ha core stop:*)"))!=null'
+          assert "enable keeps user deny"       '(.permissions.deny|index("Bash(rm -rf /:*)"))!=null'
+          assert "enable keeps user hook"       '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
+          run_cfg '{}'   # idempotent: still exactly one guard entry
+          assert "enable idempotent"            '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="'"$H"'")]|length==1'
+          run_cfg '{"guard_privileged_actions": false}'
+          assert "disable keeps user deny"      '(.permissions.deny|index("Bash(rm -rf /:*)"))!=null'
+          assert "disable keeps 2nd user deny"  '(.permissions.deny|index("Bash(curl evil.example:*)"))!=null'
+          assert "disable removes our floor"    '(.permissions.deny|index("Bash(ha core stop:*)"))==null'
+          assert "disable removes our hook"     '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="'"$H"'")]|length==0'
+          assert "disable keeps user hook"      '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
+          # Corrupt (non-empty, invalid JSON) settings.json -> backup + reset + install.
+          rm -f smoke/cfg/settings.json.corrupt.*
+          printf '%s' '{"permissions":{"allow":["Read(/x)"],}}' > "$S"
+          run_cfg '{}'
+          jq -e . "$S" >/dev/null 2>&1 || { echo "::error::corrupt settings not repaired"; exit 1; }
+          assert "corrupt: guard installed after reset" '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
+          ls smoke/cfg/settings.json.corrupt.* >/dev/null 2>&1 \
+            && echo "PASS corrupt: original backed up" \
+            || { echo "::error::corrupt settings.json was not backed up"; exit 1; }

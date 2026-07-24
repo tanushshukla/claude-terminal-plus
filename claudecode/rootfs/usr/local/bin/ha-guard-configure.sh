@@ -32,7 +32,17 @@ DEFAULT_CONFIRM='["homeassistant.restart"]'
 # fail-closed defense in depth: permissions.deny is enforced by Claude Code
 # itself even if the PreToolUse hook is somehow bypassed. Reading logs with
 # `ha core logs` / `ha core info` stays allowed - only lifecycle verbs are here.
-DENY_FLOOR='["Bash(ha core stop:*)","Bash(ha host reboot:*)","Bash(ha host shutdown:*)","Bash(ha os update:*)","Bash(ha supervisor stop:*)","Bash(ha supervisor restart:*)"]'
+#
+# SCOPE, honestly: permissions.deny rules are literal command-PREFIX matches, so
+# this floor can only cover the `ha` CLI, and only the block-tier verbs (never
+# `ha core restart`, which is confirm-tier and legitimate with a human OK). It
+# does NOT cover a curl to the Supervisor API, nor leading global flags
+# (`ha --raw core stop`). Those rely on the hook, which reads structured
+# arguments. The floor lists the documented cobra aliases for each verb
+# (`ha ha`/`ha homeassistant`/`ha home-assistant` for core, `ha ho` for host,
+# `ha su`/`ha super` for supervisor, `ha hassos` for os) so the most obvious
+# spellings are covered even without the hook.
+DENY_FLOOR='["Bash(ha core stop:*)","Bash(ha ha stop:*)","Bash(ha homeassistant stop:*)","Bash(ha home-assistant stop:*)","Bash(ha host reboot:*)","Bash(ha ho reboot:*)","Bash(ha host shutdown:*)","Bash(ha ho shutdown:*)","Bash(ha os update:*)","Bash(ha hassos update:*)","Bash(ha supervisor restart:*)","Bash(ha super restart:*)","Bash(ha su restart:*)"]'
 
 if ! command -v jq >/dev/null 2>&1; then
   echo '[WARN] jq unavailable; privileged-action guard not configured'
@@ -59,9 +69,22 @@ else
   echo '[WARN] Failed to write privileged-action guard policy'
 fi
 
-# Make sure the settings file exists and is valid JSON before editing it.
+# Make sure the settings file exists and is valid JSON before editing it. A
+# non-empty but malformed file would make every jq edit below fail and, on the
+# old code, silently leave the guard uninstalled for the whole session while
+# printing only a generic WARN. (Claude Code cannot parse it either, so the
+# session is already degraded.) Back the file up and start from a clean object
+# so the guard -- and the rest of Claude Code -- still come up, and log a loud
+# ERROR naming the backup so the user can merge their settings back.
 mkdir -p "$(dirname "$SETTINGS_FILE")"
-[ -s "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
+if [ ! -s "$SETTINGS_FILE" ]; then
+  echo '{}' > "$SETTINGS_FILE"
+elif ! jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+  backup="$SETTINGS_FILE.corrupt.$(date +%s 2>/dev/null || echo bak)"
+  cp -f "$SETTINGS_FILE" "$backup" 2>/dev/null || true
+  echo '{}' > "$SETTINGS_FILE"
+  echo "[ERROR] $SETTINGS_FILE was not valid JSON; backed it up to $backup and reset it so the privileged-action guard could be installed. Re-merge any custom settings from the backup."
+fi
 
 TMP="$(dirname "$SETTINGS_FILE")/.settings.guard.tmp"
 
@@ -84,10 +107,21 @@ if [ "$ENABLED" = "true" ]; then
   fi
 else
   # Disabled: remove our hook entry and the deny floor; leave everything else.
+  # Only touch keys that already exist, so disabling does not scaffold empty
+  # .hooks / .permissions objects onto a settings file that had none. The deny
+  # floor is removed with array subtraction (A - $floor): the previous
+  # `select( ($floor | index(.)) | not )` was a bug -- inside `$floor | index(.)`
+  # the `.` rebinds to $floor, so it evaluated `$floor | index($floor)` = 0 for
+  # every element, and `0 | not` is false, which dropped the user's ENTIRE deny
+  # list (their own unrelated safety rules included), not just the floor.
   if jq --arg hook "$HOOK_CMD" --argjson floor "$DENY_FLOOR" '
-        .hooks.PreToolUse = [ (.hooks.PreToolUse // [])[]
+        (if (.hooks.PreToolUse | type) == "array" then
+            .hooks.PreToolUse = [ .hooks.PreToolUse[]
               | select( ([ .hooks[]? | .command ] | index($hook)) | not ) ]
-        | .permissions.deny = [ (.permissions.deny // [])[] | select( ($floor | index(.)) | not ) ]
+         else . end)
+        | (if (.permissions.deny | type) == "array" then
+            .permissions.deny = ( .permissions.deny - $floor )
+         else . end)
       ' "$SETTINGS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$SETTINGS_FILE"; then
     echo '[INFO] Privileged-action guard disabled (guard_privileged_actions: false)'
   else
