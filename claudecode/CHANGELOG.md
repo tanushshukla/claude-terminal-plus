@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.79] - 2026-07-24
+
+### Fixed
+- **Claude Code fails to launch in an endless reconnect loop** (issue #33, reported by @nickfurnell). The app pre-authorized its read-only tools with four `Glob(...)` / `Grep(...)` permission rules alongside the equivalent `Read(...)` rules. Current Claude Code CLI versions have consolidated file-read permissions so a `Read(path)` rule covers Read, Glob and Grep, and they now reject the `Glob`/`Grep` spellings: the CLI prints `Permission allow rule ... is not matched by file permission checks`, exits 0 immediately, and ttyd tears the session down, producing a reconnect loop with the app itself healthy. The four rules were redundant from the start, since `Read(/homeassistant/**)` and `Read(/config/**)` were already in the same list, so removing them changes nothing about what Claude may read.
+- **Existing installs are repaired on the next start, not just new ones.** Removing the rules from the shipped list alone would have fixed nobody who was already affected: the boot script merges the pre-authorized tools with `.permissions.allow = ($tools + (.permissions.allow // []) | unique)`, which only ever adds, and `settings.json` lives in the persistent `/homeassistant/.claudecode` directory, so the stale rules survive an app update or rebuild. The boot script now actively removes any `Glob(...)` / `Grep(...)` entry from `permissions.allow` and logs which ones it dropped. This runs before the MCP branch and therefore also repairs installs running `enable_mcp: false`, which never reach the pre-authorization step. Rules added by the user are removed too, because the CLI rejects those identically; the log line names every rule removed so the change is not silent.
+
+### Notes
+- If the loop has already started, `auto_update_claude: true` plus the Supervisor watchdog turns it into a hard loop (session dies, watchdog restarts the app, the restart pulls the newest CLI, it dies again). Turning `auto_update_claude` off first gives a stable base to update from. After updating to this release the repair happens automatically on the next start and the option can go back on.
+- The prune is a no-op on a clean `settings.json`: it rewrites the file and logs only when there is something to remove, so it does not add boot noise or touch a settings file it has already repaired.
+
 ## [1.2.78] - 2026-07-19
 
 ### Fixed
