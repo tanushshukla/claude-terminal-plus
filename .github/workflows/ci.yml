@@ -432,7 +432,7 @@ jobs:
           # payloads and a fixed policy, asserting the decision for each vector:
           # MCP call_service_tool, the restart_ha tool, and shell commands.
           mkdir -p smoke/guard
-          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.supervisor_restart","hassio.os_update"],"confirm":["homeassistant.restart"]}' > smoke/guard/ha-guard.json
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
           run_hook() {
             printf '%s' "$1" | docker run --rm -i \
               -e HA_GUARD_CONFIG=/guard/ha-guard.json \
@@ -479,7 +479,7 @@ jobs:
           expect "ha ha stop alias"                   '{"tool_name":"Bash","tool_input":{"command":"ha ha stop"}}'                                                         deny
           expect "ha homeassistant stop alias"        '{"tool_name":"Bash","tool_input":{"command":"ha homeassistant stop"}}'                                              deny
           expect "ha ho reboot alias"                 '{"tool_name":"Bash","tool_input":{"command":"ha ho reboot"}}'                                                       deny
-          expect "ha su restart alias"                '{"tool_name":"Bash","tool_input":{"command":"ha su restart"}}'                                                      deny
+          expect "ha su restart alias (ask)"          '{"tool_name":"Bash","tool_input":{"command":"ha su restart"}}'                                                      ask
           expect "ha hassos update alias"             '{"tool_name":"Bash","tool_input":{"command":"ha hassos update"}}'                                                   deny
           expect "ha --flag core stop"                '{"tool_name":"Bash","tool_input":{"command":"ha --no-progress core stop"}}'                                         deny
           # bashio helper vector (the base image ships bashio).
@@ -495,7 +495,7 @@ jobs:
           # hard-coded baseline (fail closed), not collapse the list to empty.
           printf '%s' '{"enabled":true,"deny":"homeassistant.stop","confirm":[]}' > smoke/guard/ha-guard.json
           expect "wrong-typed deny fails closed"      '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    deny
-          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.supervisor_restart","hassio.os_update"],"confirm":["homeassistant.restart"]}' > smoke/guard/ha-guard.json
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
           # With the guard disabled, a denied action must pass through.
           printf '%s' '{"enabled":false,"deny":["homeassistant.stop"],"confirm":[]}' > smoke/guard/ha-guard.json
           expect "disabled guard allows stop"         '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    allow

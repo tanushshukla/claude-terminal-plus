@@ -42,10 +42,10 @@ options:
     - supervisor.watchdog_disable
     - hassio.host_reboot
     - hassio.host_shutdown
-    - hassio.supervisor_restart
     - hassio.os_update
   confirm_actions:
     - homeassistant.restart
+    - hassio.supervisor_restart
 schema:
   enable_mcp: bool
   terminal_font_size: int(10,24)

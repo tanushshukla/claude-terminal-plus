@@ -43,8 +43,8 @@ CONFIG="${HA_GUARD_CONFIG:-/root/.claude/ha-guard.json}"
 # Immutable baseline. These are always enforced while the guard is on, even if
 # the policy file is gone or malformed. Keep in sync with the config.yaml
 # defaults (which are shown to the user); the config lists only ever ADD to this.
-BUILTIN_DENY="homeassistant.stop supervisor.core_stop supervisor.watchdog_disable hassio.host_reboot hassio.host_shutdown hassio.supervisor_restart hassio.os_update"
-BUILTIN_CONFIRM="homeassistant.restart"
+BUILTIN_DENY="homeassistant.stop supervisor.core_stop supervisor.watchdog_disable hassio.host_reboot hassio.host_shutdown hassio.os_update"
+BUILTIN_CONFIRM="homeassistant.restart hassio.supervisor_restart"
 
 # The authority part of a URL pointing at the Supervisor API, used by _api()
 # below. Alternatives, in order: any explicit http(s) URL; the `supervisor` and

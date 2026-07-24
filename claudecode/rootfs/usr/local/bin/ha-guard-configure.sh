@@ -25,8 +25,8 @@ MATCHER="Bash|mcp__homeassistant__call_service_tool|mcp__homeassistant__restart_
 # Defaults must mirror the `options:` block in claudecode/config.yaml. They are
 # repeated here so the guard is still safe if options.json is missing a key
 # (for example the CI boot smoke fixtures, or a hand-edited file).
-DEFAULT_DENY='["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.supervisor_restart","hassio.os_update"]'
-DEFAULT_CONFIRM='["homeassistant.restart"]'
+DEFAULT_DENY='["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"]'
+DEFAULT_CONFIRM='["homeassistant.restart","hassio.supervisor_restart"]'
 # Fixed, non-configurable settings-level deny floor for the handful of shell
 # commands that have no legitimate autonomous use in this app. This is
 # fail-closed defense in depth: permissions.deny is enforced by Claude Code
@@ -42,7 +42,7 @@ DEFAULT_CONFIRM='["homeassistant.restart"]'
 # (`ha ha`/`ha homeassistant`/`ha home-assistant` for core, `ha ho` for host,
 # `ha su`/`ha super` for supervisor, `ha hassos` for os) so the most obvious
 # spellings are covered even without the hook.
-DENY_FLOOR='["Bash(ha core stop:*)","Bash(ha ha stop:*)","Bash(ha homeassistant stop:*)","Bash(ha home-assistant stop:*)","Bash(ha host reboot:*)","Bash(ha ho reboot:*)","Bash(ha host shutdown:*)","Bash(ha ho shutdown:*)","Bash(ha os update:*)","Bash(ha hassos update:*)","Bash(ha supervisor restart:*)","Bash(ha super restart:*)","Bash(ha su restart:*)"]'
+DENY_FLOOR='["Bash(ha core stop:*)","Bash(ha ha stop:*)","Bash(ha homeassistant stop:*)","Bash(ha home-assistant stop:*)","Bash(ha host reboot:*)","Bash(ha ho reboot:*)","Bash(ha host shutdown:*)","Bash(ha ho shutdown:*)","Bash(ha os update:*)","Bash(ha hassos update:*)"]'
 
 if ! command -v jq >/dev/null 2>&1; then
   echo '[WARN] jq unavailable; privileged-action guard not configured'
