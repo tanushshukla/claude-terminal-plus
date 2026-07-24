@@ -9,17 +9,16 @@ export LANG=C.UTF-8
 export PATH="/data/npm-global/bin:/opt/npm-global/bin:/root/.local/bin:$PATH"
 PS1='\[\033[1;36m\]claude-code\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ '
 
-# Function to update MCP token before starting Claude
-update_mcp_token() {
-  local SETTINGS_FILE=/root/.claude/settings.json
-  if [ -f "$SETTINGS_FILE" ] && [ -n "$SUPERVISOR_TOKEN" ]; then
-    jq ".mcpServers.homeassistant.env.HASS_TOKEN = \"$SUPERVISOR_TOKEN\"" "$SETTINGS_FILE" > /tmp/settings.tmp 2>/dev/null && mv /tmp/settings.tmp "$SETTINGS_FILE"
-  fi
-}
-
 # Aliases
+#
+# `c` / `cc` used to call an update_mcp_token function first. That function was
+# dead code with a side effect: it wrote .mcpServers.homeassistant.env.HASS_TOKEN
+# into settings.json, but the MCP server is registered in .claude.json (with no
+# env block), and hass-mcp reads HA_TOKEN / HA_URL, which the boot script exports.
+# So it refreshed nothing and left a stray mcpServers key in a file that does not
+# use one. The boot script now removes that key if an older version wrote it.
 alias ll='ls -la'
-alias c='update_mcp_token && claude'
-alias cc='update_mcp_token && claude --continue'
+alias c='claude'
+alias cc='claude --continue'
 alias ha-config='cd /homeassistant'
 alias ha-logs='cat /homeassistant/home-assistant.log 2>/dev/null || echo "Log not found"'

@@ -245,11 +245,25 @@ CMD ["/bin/bash", "-c", "\
   ENABLE_MCP=$(jq -r 'if .enable_mcp == false then false else true end' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
+  WORK_DIR=$(jq -r '.working_directory // empty' /data/options.json) && \
+  { [ -n \"$WORK_DIR\" ] || WORK_DIR=/homeassistant; } && \
+  if [ ! -d \"$WORK_DIR\" ]; then \
+    echo \"[WARN] working_directory '$WORK_DIR' does not exist - falling back to /homeassistant\"; \
+    WORK_DIR=/homeassistant; \
+  fi && \
   SETTINGS_FILE=/root/.claude/settings.json && \
   CLAUDE_JSON=/root/.claude.json && \
   mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
   { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
   { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
+  if jq -e 'has(\"mcpServers\")' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+    if jq 'del(.mcpServers)' \"$SETTINGS_FILE\" > /tmp/settings.nomcp 2>/dev/null && jq -e . /tmp/settings.nomcp >/dev/null 2>&1; then \
+      mv /tmp/settings.nomcp \"$SETTINGS_FILE\" && \
+      echo '[INFO] Removed a stray mcpServers key from settings.json (MCP servers belong in .claude.json)'; \
+    else \
+      rm -f /tmp/settings.nomcp; \
+    fi; \
+  fi && \
   STALE_RULES=$(jq -r '[(.permissions.allow // [])[] | select((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))] | join(\", \")' \"$SETTINGS_FILE\" 2>/dev/null || echo '') && \
   if [ -n \"$STALE_RULES\" ]; then \
     if jq '.permissions.allow = [ (.permissions.allow // [])[] | select((((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))) | not) ]' \"$SETTINGS_FILE\" > /tmp/settings.prune 2>/dev/null && jq -e . /tmp/settings.prune >/dev/null 2>&1; then \
@@ -307,7 +321,7 @@ CMD ["/bin/bash", "-c", "\
   else \
     SHELL_CMD=(bash --login); \
   fi && \
-  cd /homeassistant && \
+  cd \"$WORK_DIR\" && \
   exec ttyd --port 7681 --writable --ping-interval 30 --max-clients 5 \
     -t fontSize=$FONT_SIZE \
     -t fontFamily=Monaco,Consolas,monospace \

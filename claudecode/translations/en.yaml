@@ -31,6 +31,12 @@ configuration:
       When the terminal starts, automatically run 'claude --continue' to resume
       your previous session instead of dropping into a shell. Only takes effect
       when Session Persistence is enabled. Safe with no prior session (starts fresh).
+  claude_update_timeout:
+    name: Update Timeout (seconds)
+    description: >-
+      How long the background Claude Code update may run before it is stopped
+      (30-1800). Raise it on a slow connection if the log reports the update
+      timing out. Only used when Auto-update Claude Code is enabled.
   auto_update_claude:
     name: Auto-update Claude Code
     description: >-
