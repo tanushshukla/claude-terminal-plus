@@ -554,6 +554,21 @@ jobs:
             echo "::error::baseline not enforced when policy file is missing (got: $missing)"
             exit 1
           fi
+          # The deny REASON is what Claude reads and acts on, so its wording is
+          # behaviour, not decoration. On a live install the old wording ("ask
+          # the user to perform it themselves") led Claude to refuse correctly
+          # and then volunteer a ready-to-paste `!`-prefixed shell command to do
+          # it anyway. Assert the message points at a human path and carries the
+          # explicit no-bypass-recipe instruction, so that cannot regress.
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop"],"confirm":[]}' > smoke/guard/ha-guard.json
+          why="$(run_hook '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}' \
+            | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+          for phrase in "Home Assistant UI" "guard_privileged_actions" "do NOT hand the user"; do
+            case "$why" in
+              *"$phrase"*) echo "PASS deny reason contains: $phrase" ;;
+              *) echo "::error::deny reason is missing '$phrase' (got: $why)"; exit 1 ;;
+            esac
+          done
 
       - name: Privileged-action guard configurator (issue #29)
         run: |

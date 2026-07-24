@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.83] - 2026-07-24
+
+### Changed
+- **The privileged-action guard no longer leaves Claude to invent its own workaround when it refuses an action.** Found while exercising the guard on a live install: asked to stop Core, Claude correctly refused and explained why, then helpfully offered the user a ready-to-paste `!`-prefixed shell command to do it anyway. That is not a hole in the boundary (the guard governs what Claude runs, never what a human types, and the human is meant to be the escape hatch), and it satisfied the letter of the old wording, which said to ask the user to perform the action themselves. It is still the wrong thing for an assistant to volunteer: the block exists so a privileged action gets a human decision, and handing over the bypass turns that decision into a formality. It is also the exact sentence a prompt-injection attack would want the assistant to produce. The deny message and the injected `CLAUDE.md` now tell Claude to name the action and point the user at the Home Assistant UI (or at the guard options, if they want the policy itself relaxed), and explicitly not to supply a shell command, an escape prefix, or any other bypass recipe.
+- `README.md` documents the three ways to get a blocked action done, in increasing order of bluntness (do it yourself in the HA UI, move the action to `confirm_actions`, or turn the guard off), so the one-off human path is written down rather than rediscovered by the assistant each time. Previously only `guard_privileged_actions: false` was documented, which is a much heavier hammer than a single deliberate action needs.
+
+### CI
+- The guard hook step now asserts the deny reason names a human path and does not contain a bypass recipe, so this wording cannot silently regress.
 ## [1.2.82] - 2026-07-24
 
 ### Fixed

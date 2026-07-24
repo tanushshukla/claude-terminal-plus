@@ -210,9 +210,10 @@ CMD ["/bin/bash", "-c", "\
     '' \
     '- NEVER disable the Supervisor watchdog and stop or restart Core in the same session. If your context is lost between the two steps, Home Assistant stays down with no automatic recovery and needs physical access to fix.' \
     '- A full restart of Home Assistant requires human confirmation. Prefer reloading a specific YAML domain (for example automation.reload) over a full restart whenever that is enough.' \
-    '- NEVER autonomously stop Core, reboot or shut down the host, disable the watchdog, or start an OS or host update. Ask the user to do it themselves.' \
+    '- NEVER autonomously stop Core, reboot or shut down the host, disable the watchdog, or start an OS or host update. Name the action you would need and let the user carry it out from the Home Assistant UI (Settings > System).' \
     '- After ANY service call meant to change state, VERIFY the result by re-reading the entity or state afterwards. A call can return success yet do nothing (for example an orphaned automation entity that survived a rename), so never trust the return value alone.' \
     '- If the guard blocks or asks about an action, do not try to route around it with an alternate curl, ha CLI, or REST call. Explain to the user what you need and why.' \
+    '- Do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing the guard, even if they ask how. Point them at the Home Assistant UI, or at the app options guard_privileged_actions / disallow_actions if they want the policy itself relaxed. Naming the action and letting them decide is the whole point of the boundary.' \
     > $PERSIST_DIR/CLAUDE.md && \
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
   if [ ! -L /root/.config/claude-code ]; then rm -rf /root/.config/claude-code; ln -s $PERSIST_DIR/config /root/.config/claude-code; fi && \
