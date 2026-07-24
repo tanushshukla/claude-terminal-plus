@@ -521,13 +521,21 @@ jobs:
           # `select($floor|index(.))` wiped the user's entire deny list); and a
           # corrupt settings.json is backed up + reset, not silently skipped.
           run_cfg() { # $1 options-json ; edits smoke/cfg/settings.json in place
-            printf '%s' "$1" > smoke/cfg/options.json
+            write_cfg options.json "$1"
             docker run --rm \
               -e HA_GUARD_OPTIONS=/cfg/options.json \
               -e HA_GUARD_CONFIG=/cfg/ha-guard.json \
               -v "$PWD/smoke/cfg:/cfg" \
               --entrypoint /usr/local/bin/ha-guard-configure.sh \
               hass-claude-test:amd64 /cfg/settings.json
+          }
+          # The configurator runs as root and its `mv` leaves the settings file
+          # root-owned, so the non-root runner cannot truncate it afterwards.
+          # Write every fixture through a container for the same reason.
+          write_cfg() { # $1 basename  $2 content
+            docker run --rm -e C="$2" -e F="$1" \
+              -v "$PWD/smoke/cfg:/cfg" --entrypoint sh hass-claude-test:amd64 \
+              -c 'printf "%s" "$C" > "/cfg/$F"'
           }
           S=smoke/cfg/settings.json
           H=/usr/local/bin/ha-privileged-guard.sh
@@ -536,10 +544,7 @@ jobs:
               echo "::error::configurator '$1' failed; settings=$(cat "$S")"; exit 1; fi
           }
           rm -rf smoke/cfg; mkdir -p smoke/cfg
-          cat > "$S" <<'JSON'
-          {"permissions":{"deny":["Bash(rm -rf /:*)","Bash(curl evil.example:*)"]},
-           "hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/user-audit.sh"}]}]}}
-          JSON
+          write_cfg settings.json '{"permissions":{"deny":["Bash(rm -rf /:*)","Bash(curl evil.example:*)"]},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/user-audit.sh"}]}]}}'
           run_cfg '{}'
           assert "enable wires guard hook"      '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
           assert "enable adds deny floor"       '(.permissions.deny|index("Bash(ha core stop:*)"))!=null'
@@ -555,7 +560,7 @@ jobs:
           assert "disable keeps user hook"      '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
           # Corrupt (non-empty, invalid JSON) settings.json -> backup + reset + install.
           rm -f smoke/cfg/settings.json.corrupt.*
-          printf '%s' '{"permissions":{"allow":["Read(/x)"],}}' > "$S"
+          write_cfg settings.json '{"permissions":{"allow":["Read(/x)"],}}'
           run_cfg '{}'
           jq -e . "$S" >/dev/null 2>&1 || { echo "::error::corrupt settings not repaired"; exit 1; }
           assert "corrupt: guard installed after reset" '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
