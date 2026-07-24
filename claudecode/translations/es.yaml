@@ -38,6 +38,26 @@ configuration:
     description: >-
       Verifica e instala automáticamente actualizaciones de Claude Code al iniciar la app.
       Mantiene Claude Code actualizado sin necesidad de actualizar la versión de la app.
+  guard_privileged_actions:
+    name: Aplicar Barrera de Acciones Privilegiadas
+    description: >-
+      Aplica un límite de seguridad que bloquea o pide confirmación antes de que
+      Claude ejecute acciones destructivas de Home Assistant (detener el núcleo,
+      desactivar el watchdog del Supervisor, reiniciar o apagar el host,
+      actualizaciones del sistema) y exige confirmación humana para un reinicio
+      completo. Lo aplica la app, no solo las instrucciones. Se recomienda activarlo.
+  disallow_actions:
+    name: Acciones Bloqueadas
+    description: >-
+      Acciones de Home Assistant que Claude nunca puede ejecutar por su cuenta,
+      como identificadores dominio.servicio (por ejemplo homeassistant.stop,
+      hassio.host_reboot). Se bloquean por completo mientras la barrera está activa.
+  confirm_actions:
+    name: Acciones con Confirmación
+    description: >-
+      Acciones que requieren confirmación humana explícita antes de ejecutarse,
+      como identificadores dominio.servicio. homeassistant.restart se incluye de
+      forma predeterminada para que un reinicio completo nunca se active sin aprobación.
 
 network:
   7681/tcp: Terminal Web (ttyd)

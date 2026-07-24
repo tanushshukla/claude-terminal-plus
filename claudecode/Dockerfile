@@ -111,6 +111,15 @@ COPY rootfs/root/.tmux.conf /root/.tmux.conf
 # heredoc, for the same build-portability reason as .tmux.conf above (issue #26).
 COPY rootfs/root/.bashrc /root/.bashrc
 
+# Privileged-action boundary (issue #29): a PreToolUse hook that blocks or gates
+# destructive Home Assistant actions (stop Core, disable watchdog, reboot host,
+# OS update, restart) and a boot-time configurator that wires it into the Claude
+# Code settings from the app options. Shipped as static rootfs scripts and made
+# executable so they run under the AppArmor profile (/usr/local/** is ixr).
+COPY rootfs/usr/local/bin/ha-privileged-guard.sh /usr/local/bin/ha-privileged-guard.sh
+COPY rootfs/usr/local/bin/ha-guard-configure.sh /usr/local/bin/ha-guard-configure.sh
+RUN chmod +x /usr/local/bin/ha-privileged-guard.sh /usr/local/bin/ha-guard-configure.sh
+
 # Ensure .bashrc is sourced for login shells too
 RUN echo 'source ~/.bashrc' > /root/.profile
 
@@ -194,6 +203,16 @@ CMD ["/bin/bash", "-c", "\
     '\\`\\`\\`' \
     '' \
     '**Key insight:** \\`_LOGGER.debug()\\` calls are invisible unless the logger level is set to debug. Use \\`_LOGGER.info()\\` or \\`_LOGGER.warning()\\` for logs that should always appear.' \
+    '' \
+    '## Privileged actions and safety (enforced by this app)' \
+    '' \
+    'A privileged-action guard is active. Some Home Assistant actions are BLOCKED and some require explicit human confirmation before they run. This is deliberate, not a malfunction.' \
+    '' \
+    '- NEVER disable the Supervisor watchdog and stop or restart Core in the same session. If your context is lost between the two steps, Home Assistant stays down with no automatic recovery and needs physical access to fix.' \
+    '- A full restart of Home Assistant requires human confirmation. Prefer reloading a specific YAML domain (for example automation.reload) over a full restart whenever that is enough.' \
+    '- NEVER autonomously stop Core, reboot or shut down the host, disable the watchdog, or start an OS or host update. Ask the user to do it themselves.' \
+    '- After ANY service call meant to change state, VERIFY the result by re-reading the entity or state afterwards. A call can return success yet do nothing (for example an orphaned automation entity that survived a rename), so never trust the return value alone.' \
+    '- If the guard blocks or asks about an action, do not try to route around it with an alternate curl, ha CLI, or REST call. Explain to the user what you need and why.' \
     > $PERSIST_DIR/CLAUDE.md && \
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
   if [ ! -L /root/.config/claude-code ]; then rm -rf /root/.config/claude-code; ln -s $PERSIST_DIR/config /root/.config/claude-code; fi && \
@@ -259,6 +278,7 @@ CMD ["/bin/bash", "-c", "\
   else \
     echo '[INFO] MCP disabled'; \
   fi && \
+  { bash /usr/local/bin/ha-guard-configure.sh \"$SETTINGS_FILE\" || echo '[WARN] privileged-action guard configuration failed'; } && \
   if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
     UPDATE_LOG=/tmp/claude-update.log; \
     echo \"[INFO] Updating Claude Code in background (timeout ${UPDATE_TIMEOUT}s)...\"; \
