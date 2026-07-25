@@ -19,3 +19,7 @@ node_modules/
 
 # Personal forum-post drafts, kept locally only
 docs/
+
+# Local Playwright/verification scratch, never part of the app
+.playwright-mcp/
+terminal-plus.png
