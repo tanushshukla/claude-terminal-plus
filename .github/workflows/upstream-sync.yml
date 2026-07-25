@@ -130,7 +130,9 @@ jobs:
         env:
           BASE: ${{ steps.merge.outputs.base }}
         run: |
-          changed="$(git diff --name-only "$BASE" -- .github/workflows)"
+          # --cached: after --no-commit the merged tree lives in the index, and
+          # a plain worktree diff misses workflow files upstream *added*.
+          changed="$(git diff --name-only --cached "$BASE" -- .github/workflows)"
           if [ -z "$changed" ]; then
             echo "Merge brings no workflow changes."
             echo "skipped=false" >> "$GITHUB_OUTPUT"
