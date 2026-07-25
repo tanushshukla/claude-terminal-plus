@@ -111,6 +111,15 @@ COPY rootfs/root/.tmux.conf /root/.tmux.conf
 # heredoc, for the same build-portability reason as .tmux.conf above (issue #26).
 COPY rootfs/root/.bashrc /root/.bashrc
 
+# Privileged-action boundary (issue #29): a PreToolUse hook that blocks or gates
+# destructive Home Assistant actions (stop Core, disable watchdog, reboot host,
+# OS update, restart) and a boot-time configurator that wires it into the Claude
+# Code settings from the app options. Shipped as static rootfs scripts and made
+# executable so they run under the AppArmor profile (/usr/local/** is ixr).
+COPY rootfs/usr/local/bin/ha-privileged-guard.sh /usr/local/bin/ha-privileged-guard.sh
+COPY rootfs/usr/local/bin/ha-guard-configure.sh /usr/local/bin/ha-guard-configure.sh
+RUN chmod +x /usr/local/bin/ha-privileged-guard.sh /usr/local/bin/ha-guard-configure.sh
+
 # Ensure .bashrc is sourced for login shells too
 RUN echo 'source ~/.bashrc' > /root/.profile
 
@@ -194,6 +203,17 @@ CMD ["/bin/bash", "-c", "\
     '\\`\\`\\`' \
     '' \
     '**Key insight:** \\`_LOGGER.debug()\\` calls are invisible unless the logger level is set to debug. Use \\`_LOGGER.info()\\` or \\`_LOGGER.warning()\\` for logs that should always appear.' \
+    '' \
+    '## Privileged actions and safety (enforced by this app)' \
+    '' \
+    'A privileged-action guard is active. Some Home Assistant actions are BLOCKED and some require explicit human confirmation before they run. This is deliberate, not a malfunction.' \
+    '' \
+    '- NEVER disable the Supervisor watchdog and stop or restart Core in the same session. If your context is lost between the two steps, Home Assistant stays down with no automatic recovery and needs physical access to fix.' \
+    '- A full restart of Home Assistant requires human confirmation. Prefer reloading a specific YAML domain (for example automation.reload) over a full restart whenever that is enough.' \
+    '- NEVER autonomously stop Core, reboot or shut down the host, disable the watchdog, or start an OS or host update. Name the action you would need and let the user carry it out from the Home Assistant UI (Settings > System).' \
+    '- After ANY service call meant to change state, VERIFY the result by re-reading the entity or state afterwards. A call can return success yet do nothing (for example an orphaned automation entity that survived a rename), so never trust the return value alone.' \
+    '- If the guard blocks or asks about an action, do not try to route around it with an alternate curl, ha CLI, or REST call. Explain to the user what you need and why.' \
+    '- Do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing the guard, even if they ask how. Point them at the Home Assistant UI, or at the app options guard_privileged_actions / disallow_actions if they want the policy itself relaxed. Naming the action and letting them decide is the whole point of the boundary.' \
     > $PERSIST_DIR/CLAUDE.md && \
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
   if [ ! -L /root/.config/claude-code ]; then rm -rf /root/.config/claude-code; ln -s $PERSIST_DIR/config /root/.config/claude-code; fi && \
@@ -223,14 +243,38 @@ CMD ["/bin/bash", "-c", "\
   THEME=$(jq -r '.terminal_theme // \"dark\"' /data/options.json) && \
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   AUTO_CONTINUE=$(jq -r '.auto_continue // false' /data/options.json) && \
-  ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
+  ENABLE_MCP=$(jq -r 'if .enable_mcp == false then false else true end' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
+  WORK_DIR=$(jq -r '.working_directory // empty' /data/options.json) && \
+  { [ -n \"$WORK_DIR\" ] || WORK_DIR=/homeassistant; } && \
+  if [ ! -d \"$WORK_DIR\" ]; then \
+    echo \"[WARN] working_directory '$WORK_DIR' does not exist - falling back to /homeassistant\"; \
+    WORK_DIR=/homeassistant; \
+  fi && \
   SETTINGS_FILE=/root/.claude/settings.json && \
   CLAUDE_JSON=/root/.claude.json && \
   mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
   { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
   { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
+  if jq -e 'has(\"mcpServers\")' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+    if jq 'del(.mcpServers)' \"$SETTINGS_FILE\" > /tmp/settings.nomcp 2>/dev/null && jq -e . /tmp/settings.nomcp >/dev/null 2>&1; then \
+      mv /tmp/settings.nomcp \"$SETTINGS_FILE\" && \
+      echo '[INFO] Removed a stray mcpServers key from settings.json (MCP servers belong in .claude.json)'; \
+    else \
+      rm -f /tmp/settings.nomcp; \
+    fi; \
+  fi && \
+  STALE_RULES=$(jq -r '[(.permissions.allow // [])[] | select((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))] | join(\", \")' \"$SETTINGS_FILE\" 2>/dev/null || echo '') && \
+  if [ -n \"$STALE_RULES\" ]; then \
+    if jq '.permissions.allow = [ (.permissions.allow // [])[] | select((((type == \"string\") and (startswith(\"Glob(\") or startswith(\"Grep(\")))) | not) ]' \"$SETTINGS_FILE\" > /tmp/settings.prune 2>/dev/null && jq -e . /tmp/settings.prune >/dev/null 2>&1; then \
+      mv /tmp/settings.prune \"$SETTINGS_FILE\" && \
+      echo \"[INFO] Removed deprecated permission rules that stop Claude Code launching: $STALE_RULES\"; \
+    else \
+      rm -f /tmp/settings.prune; \
+      echo '[WARN] Failed to remove deprecated Glob()/Grep() permission rules from settings.json'; \
+    fi; \
+  fi && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
     if jq '.mcpServers.homeassistant = {\"type\":\"stdio\",\"command\":\"hass-mcp\"} | del(.mcpServers.playwright)' \"$CLAUDE_JSON\" > /tmp/claude.tmp && jq -e . /tmp/claude.tmp >/dev/null 2>&1; then \
       cp /tmp/claude.tmp \"$PERSIST_DIR/.claude.json.tmp\" && mv \"$PERSIST_DIR/.claude.json.tmp\" \"$PERSIST_DIR/.claude.json\"; \
@@ -238,7 +282,7 @@ CMD ["/bin/bash", "-c", "\
       echo '[WARN] Failed to register MCP server in .claude.json'; \
     fi; \
     rm -f /tmp/claude.tmp; \
-    ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\",\"Glob(/homeassistant/**)\",\"Glob(/config/**)\",\"Grep(/homeassistant/**)\",\"Grep(/config/**)\"]' && \
+    ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\"]' && \
     if jq --argjson tools \"$ALLOWED_TOOLS\" '.permissions.allow = ($tools + (.permissions.allow // []) | unique)' \"$SETTINGS_FILE\" > /tmp/settings.tmp; then \
       mv /tmp/settings.tmp \"$SETTINGS_FILE\" && \
       echo '[INFO] MCP configured with Home Assistant integration' && \
@@ -249,6 +293,7 @@ CMD ["/bin/bash", "-c", "\
   else \
     echo '[INFO] MCP disabled'; \
   fi && \
+  { bash /usr/local/bin/ha-guard-configure.sh \"$SETTINGS_FILE\" || echo '[WARN] privileged-action guard configuration failed'; } && \
   if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
     UPDATE_LOG=/tmp/claude-update.log; \
     echo \"[INFO] Updating Claude Code in background (timeout ${UPDATE_TIMEOUT}s)...\"; \
@@ -277,7 +322,7 @@ CMD ["/bin/bash", "-c", "\
   else \
     SHELL_CMD=(bash --login); \
   fi && \
-  cd /homeassistant && \
+  cd \"$WORK_DIR\" && \
   exec ttyd --port 7681 --writable --ping-interval 30 --max-clients 5 \
     -t fontSize=$FONT_SIZE \
     -t fontFamily=Monaco,Consolas,monospace \

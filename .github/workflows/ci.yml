@@ -50,6 +50,50 @@ jobs:
               exit 1
           fi
 
+      - name: every option has a translation in every language
+        # An option with no translation shows up in the Home Assistant UI as a
+        # bare key with no name or description (claude_update_timeout shipped
+        # that way until 1.2.82).
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          opts = set(yaml.safe_load(open("claudecode/config.yaml"))["options"])
+          bad = False
+          for lang in ("en", "es", "pt-BR"):
+              path = f"claudecode/translations/{lang}.yaml"
+              keys = set((yaml.safe_load(open(path, encoding="utf-8")) or {}).get("configuration", {}))
+              missing, extra = sorted(opts - keys), sorted(keys - opts)
+              if missing:
+                  print(f"::error file={path}::options with no translation: {missing}")
+                  bad = True
+              if extra:
+                  print(f"::error file={path}::translations for options that no longer exist: {extra}")
+                  bad = True
+          if bad:
+              sys.exit(1)
+          print(f"ok: {len(opts)} options translated in en, es, pt-BR")
+          PY
+
+      - name: every option is actually read by the boot script
+        # working_directory was accepted, documented and translated for many
+        # releases while nothing read it (fixed in 1.2.82). A configurable option
+        # that no code consults is worse than no option at all.
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          opts = yaml.safe_load(open("claudecode/config.yaml"))["options"]
+          # The boot script lives in the Dockerfile CMD; the guard options are
+          # consumed by the rootfs helper scripts it calls.
+          sources = ["claudecode/Dockerfile"] + sorted(glob.glob("claudecode/rootfs/usr/local/bin/*.sh"))
+          blob = "".join(open(p, encoding="utf-8").read() for p in sources)
+          unread = [o for o in opts if f".{o}" not in blob]
+          if unread:
+              print(f"::error file=claudecode/config.yaml::options never read by any boot code: {sorted(unread)}")
+              print(f"searched: {sources}")
+              sys.exit(1)
+          print(f"ok: all {len(opts)} options are read by the boot script or a helper")
+          PY
+
       - name: options and schema keys are in sync
         run: |
           python3 - <<'PY'
@@ -93,6 +137,14 @@ jobs:
           shellcheck \
             -e SC2086 -e SC2155 -e SC2046 -e SC2016 -e SC1009 -e SC1073 -e SC1072 \
             /tmp/boot.sh || true
+
+      - name: shellcheck privileged-action guard scripts (blocking)
+        # These ship as standalone rootfs files (not the joined boot string), so
+        # they get a real, blocking shellcheck.
+        run: |
+          shellcheck \
+            claudecode/rootfs/usr/local/bin/ha-privileged-guard.sh \
+            claudecode/rootfs/usr/local/bin/ha-guard-configure.sh
 
   build:
     name: Docker build smoke (amd64)
@@ -177,6 +229,17 @@ jobs:
           test -x smoke/data/npm-global/bin/claude
           test -f smoke/data/npm-global/.seed-complete
           grep -q '\[INFO\] Seeded /data/npm-global' smoke/boot.log
+          # Regression guard for #33: the pre-authorized tool list must never
+          # ship Glob()/Grep() permission rules again. Current Claude Code CLIs
+          # reject them (Read(path) already covers Glob and Grep), which stops
+          # the CLI launching and produces a reconnect loop.
+          jq -e '[(.permissions.allow // [])[] | select(startswith("Glob(") or startswith("Grep("))] | length == 0' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null \
+            || { echo "::error::settings.json still ships Glob()/Grep() permission rules (issue #33)"; exit 1; }
+          # The Read rules that actually grant the access must still be there.
+          jq -e '((.permissions.allow // []) | index("Read(/homeassistant/**)")) != null
+                 and ((.permissions.allow // []) | index("Read(/config/**)")) != null' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null
           # Regression guard for #20: the MCP-registration step must land the
           # config on the PERSISTENT volume, written through the
           # /root/.claude.json symlink to its target. The old code did
@@ -188,6 +251,20 @@ jobs:
           test -f smoke/homeassistant/.claudecode/.claude.json
           jq -e '.mcpServers.homeassistant.command == "hass-mcp"' \
             smoke/homeassistant/.claudecode/.claude.json >/dev/null
+          # Privileged-action guard (issue #29): with no guard keys in the
+          # options.json fixture the boot must fall back to the secure defaults,
+          # write the policy file the hook reads, and wire the PreToolUse hook +
+          # the fixed deny floor into settings.json.
+          grep -q '\[INFO\] Privileged-action guard active' smoke/boot.log
+          test -f smoke/homeassistant/.claudecode/ha-guard.json
+          jq -e '.enabled == true
+                 and ((.deny // []) | index("homeassistant.stop")) != null
+                 and ((.confirm // []) | index("homeassistant.restart")) != null' \
+            smoke/homeassistant/.claudecode/ha-guard.json >/dev/null
+          jq -e '([.hooks.PreToolUse[]?.hooks[]?.command] | index("/usr/local/bin/ha-privileged-guard.sh")) != null' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null
+          jq -e '((.permissions.deny // []) | index("Bash(ha host reboot:*)")) != null' \
+            smoke/homeassistant/.claudecode/settings.json >/dev/null
           # Regression guard for #15/#16: the web terminal opens a login shell,
           # and /etc/profile on the Alpine base resets PATH. `claude` must still
           # resolve on PATH in a real login shell, not just exist on disk.
@@ -279,6 +356,14 @@ jobs:
             echo "::error::auto_continue launch word-split: 'bash -ic cc' did not survive as one argument"
             exit 1
           fi
+          # This fixture sets enable_mcp:false, so the boot must actually disable
+          # MCP. Regression guard: `jq -r '.enable_mcp // true'` treated a literal
+          # false as absent and returned true, leaving MCP on when it was off.
+          grep -q '\[INFO\] MCP disabled' smoke/boot-autocontinue.log
+          if grep -q '\[INFO\] MCP configured' smoke/boot-autocontinue.log; then
+            echo "::error::enable_mcp is false but MCP was still configured"
+            exit 1
+          fi
 
           # session_persistence ON, auto_continue OFF: plain tmux session, no cc.
           mkdir -p smoke/data-noautocontinue
@@ -306,6 +391,50 @@ jobs:
             echo "::error::auto_continue is off but the cc launch command is present"
             exit 1
           fi
+
+      - name: Boot repairs an install already broken by Glob/Grep rules (issue #33)
+        run: |
+          set -euo pipefail
+          # An install that already ran an affected release has the four rules
+          # baked into the PERSISTENT settings.json. Dropping them from the
+          # shipped list is not enough on its own, because the pre-authorization
+          # merge only ever adds. The boot must actively prune them, and must do
+          # so even with enable_mcp:false, which never reaches that merge.
+          mkdir -p smoke/data-glob smoke/ha-glob/.claudecode
+          cat > smoke/data-glob/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300
+          }
+          EOF
+          cat > smoke/ha-glob/.claudecode/settings.json <<'EOF'
+          {"permissions":{"allow":[
+            "Read(/homeassistant/**)","Read(/config/**)",
+            "Glob(/homeassistant/**)","Glob(/config/**)",
+            "Grep(/homeassistant/**)","Grep(/config/**)",
+            "Glob(/my/own/**)"
+          ]}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-glob:/data:rw" \
+            -v "$PWD/smoke/ha-glob:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-glob.log
+          grep -q '\[INFO\] MCP disabled' smoke/boot-glob.log
+          grep -q '\[INFO\] Removed deprecated permission rules' smoke/boot-glob.log
+          S=smoke/ha-glob/.claudecode/settings.json
+          jq -e '[(.permissions.allow // [])[] | select(startswith("Glob(") or startswith("Grep("))] | length == 0' "$S" >/dev/null \
+            || { echo "::error::stale Glob()/Grep() rules were not pruned from an existing settings.json (issue #33)"; exit 1; }
+          jq -e '((.permissions.allow // []) | index("Read(/homeassistant/**)")) != null
+                 and ((.permissions.allow // []) | index("Read(/config/**)")) != null' "$S" >/dev/null \
+            || { echo "::error::pruning removed the Read rules it was supposed to keep"; exit 1; }
 
       - name: Boot smoke covers the failure-tail path on a forced timeout
         run: |
@@ -339,3 +468,161 @@ jobs:
           grep -q '\[WARN\] Claude Code update failed/timed out'             smoke/boot-update.log
           # Tail-on-failure must produce at least one indented line.
           grep -qE '^  \| '                                                  smoke/boot-update.log
+
+      - name: Privileged-action guard hook decisions (issue #29)
+        run: |
+          set -euo pipefail
+          # Drive the REAL hook inside the built image with crafted PreToolUse
+          # payloads and a fixed policy, asserting the decision for each vector:
+          # MCP call_service_tool, the restart_ha tool, and shell commands.
+          mkdir -p smoke/guard
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
+          run_hook() {
+            printf '%s' "$1" | docker run --rm -i \
+              -e HA_GUARD_CONFIG=/guard/ha-guard.json \
+              -v "$PWD/smoke/guard:/guard:ro" \
+              --entrypoint /usr/local/bin/ha-privileged-guard.sh \
+              hass-claude-test:amd64
+          }
+          expect() { # $1 desc  $2 payload  $3 expected decision (deny|ask|allow)
+            local out got
+            out="$(run_hook "$2")"
+            if [ -z "$out" ]; then got=allow; else got="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision')"; fi
+            if [ "$got" = "$3" ]; then
+              echo "PASS [$3] $1"
+            else
+              echo "::error::guard hook '$1': expected $3 got '$got' (raw: $out)"
+              exit 1
+            fi
+          }
+          expect "call_service homeassistant.stop"    '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    deny
+          expect "call_service hassio.host_reboot"    '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"hassio","service":"host_reboot"}}'     deny
+          expect "call_service homeassistant.restart" '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' ask
+          expect "call_service light.turn_on (safe)"  '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"light","service":"turn_on"}}'         allow
+          expect "restart_ha tool"                    '{"tool_name":"mcp__homeassistant__restart_ha","tool_input":{}}'                                                     ask
+          expect "bash ha host reboot"                '{"tool_name":"Bash","tool_input":{"command":"ha host reboot"}}'                                                     deny
+          expect "bash watchdog disable curl"         '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/homeassistant/options -d {\"watchdog\": false}"}}' deny
+          expect "bash ha core logs (safe)"           '{"tool_name":"Bash","tool_input":{"command":"ha core logs | tail -100"}}'                                          allow
+          # REST service-path vector: stop/reboot via the Core REST API must be
+          # matched, not just the ha CLI (regression guard, review finding).
+          expect "REST stop via /api/services"        '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/core/api/services/homeassistant/stop"}}' deny
+          expect "REST hassio.host_reboot"            '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/core/api/services/hassio/host_reboot"}}' deny
+          expect "REST light.turn_on (safe)"          '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/core/api/services/light/turn_on"}}'   allow
+          # Line-continuation must not slip the command past the matcher.
+          expect "bash ha core (cont) stop"           '{"tool_name":"Bash","tool_input":{"command":"ha core \\\n  stop"}}'                                                 deny
+          # Bare mention in a read command must NOT be blocked (false-positive guard).
+          expect "bash grep mentions stop (safe)"     '{"tool_name":"Bash","tool_input":{"command":"ha core logs | grep -i homeassistant.stop"}}'                        allow
+          # Host-agnostic Supervisor addressing + the /homeassistant/* alias family
+          # (the exact endpoint the issue #29 incident used). Matching only the
+          # supervisor hostname and only /core/* left all of these open.
+          expect "homeassistant/* alias stop"         '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/homeassistant/stop"}}'                 deny
+          expect "raw-IP core stop"                   '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://172.30.32.2/core/stop"}}'                         deny
+          expect "var-addressed homeassistant stop"   '{"tool_name":"Bash","tool_input":{"command":"curl -X POST \"$SUPERVISOR_API/homeassistant/stop\""}}'               deny
+          expect "homeassistant/restart alias (ask)"  '{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://supervisor/homeassistant/restart"}}'              ask
+          # ha CLI cobra aliases + a leading global flag must not bypass the hook.
+          expect "ha ha stop alias"                   '{"tool_name":"Bash","tool_input":{"command":"ha ha stop"}}'                                                         deny
+          expect "ha homeassistant stop alias"        '{"tool_name":"Bash","tool_input":{"command":"ha homeassistant stop"}}'                                              deny
+          expect "ha ho reboot alias"                 '{"tool_name":"Bash","tool_input":{"command":"ha ho reboot"}}'                                                       deny
+          expect "ha su restart alias (ask)"          '{"tool_name":"Bash","tool_input":{"command":"ha su restart"}}'                                                      ask
+          expect "ha hassos update alias"             '{"tool_name":"Bash","tool_input":{"command":"ha hassos update"}}'                                                   deny
+          expect "ha --flag core stop"                '{"tool_name":"Bash","tool_input":{"command":"ha --no-progress core stop"}}'                                         deny
+          # bashio helper vector (the base image ships bashio).
+          expect "bashio core.stop"                   '{"tool_name":"Bash","tool_input":{"command":"bashio::core.stop"}}'                                                  deny
+          # False-positive guards: a denied verb quoted as DATA (echo/grep/cat of a
+          # config path, a watchdog value in a log grep) must stay allowed, or users
+          # will disable the guard. The `ha` verb is only matched at a command
+          # position, and the watchdog value form only with an HTTP client present.
+          expect "echo mentions restart (safe)"       '{"tool_name":"Bash","tool_input":{"command":"echo \"reminder: run ha core restart later\""}}'                      allow
+          expect "cat homeassistant path (safe)"      '{"tool_name":"Bash","tool_input":{"command":"cat /homeassistant/restart.yaml"}}'                                    allow
+          expect "grep watchdog=false log (safe)"     '{"tool_name":"Bash","tool_input":{"command":"grep -c watchdog=false /homeassistant/home-assistant.log"}}'          allow
+          # A well-formed policy file with a wrong-typed .deny must fall back to the
+          # hard-coded baseline (fail closed), not collapse the list to empty.
+          printf '%s' '{"enabled":true,"deny":"homeassistant.stop","confirm":[]}' > smoke/guard/ha-guard.json
+          expect "wrong-typed deny fails closed"      '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    deny
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
+          # With the guard disabled, a denied action must pass through.
+          printf '%s' '{"enabled":false,"deny":["homeassistant.stop"],"confirm":[]}' > smoke/guard/ha-guard.json
+          expect "disabled guard allows stop"         '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    allow
+          # Baseline must survive a missing/corrupt policy file (fails closed to
+          # the hard-coded baseline, not open).
+          missing="$(printf '%s' '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}' \
+            | docker run --rm -i -e HA_GUARD_CONFIG=/guard/does-not-exist.json -v "$PWD/smoke/guard:/guard:ro" \
+                --entrypoint /usr/local/bin/ha-privileged-guard.sh hass-claude-test:amd64)"
+          if printf '%s' "$missing" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null; then
+            echo "PASS [deny] baseline enforced with missing policy file"
+          else
+            echo "::error::baseline not enforced when policy file is missing (got: $missing)"
+            exit 1
+          fi
+          # The deny REASON is what Claude reads and acts on, so its wording is
+          # behaviour, not decoration. On a live install the old wording ("ask
+          # the user to perform it themselves") led Claude to refuse correctly
+          # and then volunteer a ready-to-paste `!`-prefixed shell command to do
+          # it anyway. Assert the message points at a human path and carries the
+          # explicit no-bypass-recipe instruction, so that cannot regress.
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop"],"confirm":[]}' > smoke/guard/ha-guard.json
+          why="$(run_hook '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}' \
+            | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+          for phrase in "Home Assistant UI" "guard_privileged_actions" "do NOT hand the user"; do
+            case "$why" in
+              *"$phrase"*) echo "PASS deny reason contains: $phrase" ;;
+              *) echo "::error::deny reason is missing '$phrase' (got: $why)"; exit 1 ;;
+            esac
+          done
+
+      - name: Privileged-action guard configurator (issue #29)
+        run: |
+          set -euo pipefail
+          # Drive the real ha-guard-configure.sh inside the built image against a
+          # settings file that already holds USER-owned deny rules and a USER hook,
+          # asserting: enable wires our hook+floor and keeps the user's; disable
+          # removes only ours and preserves the user's (regression guard: the old
+          # `select($floor|index(.))` wiped the user's entire deny list); and a
+          # corrupt settings.json is backed up + reset, not silently skipped.
+          run_cfg() { # $1 options-json ; edits smoke/cfg/settings.json in place
+            write_cfg options.json "$1"
+            docker run --rm \
+              -e HA_GUARD_OPTIONS=/cfg/options.json \
+              -e HA_GUARD_CONFIG=/cfg/ha-guard.json \
+              -v "$PWD/smoke/cfg:/cfg" \
+              --entrypoint /usr/local/bin/ha-guard-configure.sh \
+              hass-claude-test:amd64 /cfg/settings.json
+          }
+          # The configurator runs as root and its `mv` leaves the settings file
+          # root-owned, so the non-root runner cannot truncate it afterwards.
+          # Write every fixture through a container for the same reason.
+          write_cfg() { # $1 basename  $2 content
+            docker run --rm -e C="$2" -e F="$1" \
+              -v "$PWD/smoke/cfg:/cfg" --entrypoint sh hass-claude-test:amd64 \
+              -c 'printf "%s" "$C" > "/cfg/$F"'
+          }
+          S=smoke/cfg/settings.json
+          H=/usr/local/bin/ha-privileged-guard.sh
+          assert() { # $1 desc  $2 jq-filter-over-$S (must be true)
+            if jq -e "$2" "$S" >/dev/null 2>&1; then echo "PASS $1"; else
+              echo "::error::configurator '$1' failed; settings=$(cat "$S")"; exit 1; fi
+          }
+          rm -rf smoke/cfg; mkdir -p smoke/cfg
+          write_cfg settings.json '{"permissions":{"deny":["Bash(rm -rf /:*)","Bash(curl evil.example:*)"]},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/user-audit.sh"}]}]}}'
+          run_cfg '{}'
+          assert "enable wires guard hook"      '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
+          assert "enable adds deny floor"       '(.permissions.deny|index("Bash(ha core stop:*)"))!=null'
+          assert "enable keeps user deny"       '(.permissions.deny|index("Bash(rm -rf /:*)"))!=null'
+          assert "enable keeps user hook"       '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
+          run_cfg '{}'   # idempotent: still exactly one guard entry
+          assert "enable idempotent"            '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="'"$H"'")]|length==1'
+          run_cfg '{"guard_privileged_actions": false}'
+          assert "disable keeps user deny"      '(.permissions.deny|index("Bash(rm -rf /:*)"))!=null'
+          assert "disable keeps 2nd user deny"  '(.permissions.deny|index("Bash(curl evil.example:*)"))!=null'
+          assert "disable removes our floor"    '(.permissions.deny|index("Bash(ha core stop:*)"))==null'
+          assert "disable removes our hook"     '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="'"$H"'")]|length==0'
+          assert "disable keeps user hook"      '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
+          # Corrupt (non-empty, invalid JSON) settings.json -> backup + reset + install.
+          rm -f smoke/cfg/settings.json.corrupt.*
+          write_cfg settings.json '{"permissions":{"allow":["Read(/x)"],}}'
+          run_cfg '{}'
+          jq -e . "$S" >/dev/null 2>&1 || { echo "::error::corrupt settings not repaired"; exit 1; }
+          assert "corrupt: guard installed after reset" '([.hooks.PreToolUse[]?.hooks[]?.command]|index("'"$H"'"))!=null'
+          ls smoke/cfg/settings.json.corrupt.* >/dev/null 2>&1 \
+            && echo "PASS corrupt: original backed up" \
+            || { echo "::error::corrupt settings.json was not backed up"; exit 1; }
