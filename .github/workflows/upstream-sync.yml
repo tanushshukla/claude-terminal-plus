@@ -2,7 +2,14 @@ name: Sync with upstream
 
 # Daily: merge sproft/hass-claude, re-apply the plus overlay, bump the addon
 # version, push to main. Home Assistant then offers the update to users.
-# Conflicts outside overlay-managed files fall back to a PR for manual review.
+# Conflicts outside overlay-managed files fall back to an issue for manual work.
+#
+# Workflow files: GitHub refuses any push from the default GITHUB_TOKEN that
+# changes .github/workflows/**, and no `permissions:` key can grant it. So when
+# no SYNC_TOKEN secret is set, upstream's workflow changes are held back before
+# the merge is committed - nothing pushed touches that directory - and an issue
+# is opened. Set a SYNC_TOKEN secret (a PAT with `repo` + `workflow` scope) to
+# have workflow changes synced automatically as well.
 #
 # Security note: this workflow runs only on schedule/workflow_dispatch and
 # never interpolates untrusted event data into shell commands.
@@ -18,7 +25,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  issues: write
 
 concurrency:
   group: upstream-sync
@@ -39,9 +46,21 @@ jobs:
         README.md
         repository.yaml
     steps:
+      - name: Detect sync token
+        id: token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -n "$SYNC_TOKEN" ]; then
+            echo "pat=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pat=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Configure git
         run: |
@@ -67,7 +86,12 @@ jobs:
         id: merge
         if: steps.check.outputs.new == 'true'
         run: |
-          if git merge upstream/main --no-edit; then
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # --no-commit: the merge commit is created in a later step, after
+          # workflow files have been filtered, so no pushed commit ever touches
+          # .github/workflows when only the default token is available.
+          if git merge upstream/main --no-commit --no-ff; then
             echo "result=clean" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -92,25 +116,91 @@ jobs:
           fi
 
           # All conflicts are in overlay-managed files: take upstream's side,
-          # apply-plus.sh re-applies our changes in the next step.
+          # apply-plus.sh re-applies our changes in a later step.
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             git checkout --theirs -- "$f" || git checkout upstream/main -- "$f"
             git add -- "$f"
           done <<< "$conflicted"
-          git commit --no-edit
           echo "result=clean" >> "$GITHUB_OUTPUT"
+
+      - name: Hold back upstream workflow changes
+        id: workflows
+        if: steps.check.outputs.new == 'true' && steps.merge.outputs.result == 'clean' && steps.token.outputs.pat == 'false'
+        env:
+          BASE: ${{ steps.merge.outputs.base }}
+        run: |
+          changed="$(git diff --name-only "$BASE" -- .github/workflows)"
+          if [ -z "$changed" ]; then
+            echo "Merge brings no workflow changes."
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Holding back (default token cannot push workflow changes):"
+          echo "$changed"
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if git cat-file -e "$BASE:$f" 2>/dev/null; then
+              git checkout "$BASE" -- "$f"
+            else
+              # Upstream added this file; drop it rather than push it.
+              git rm -f --quiet -- "$f"
+            fi
+          done <<< "$changed"
+
+          {
+            echo "skipped=true"
+            echo "files<<PLUS_EOF"
+            echo "$changed"
+            echo "PLUS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Re-apply plus overlay and push
         if: steps.check.outputs.new == 'true' && steps.merge.outputs.result == 'clean'
         run: |
           bash scripts/apply-plus.sh
-          if ! git diff --quiet; then
-            version="$(sed -n 's/^version: *"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p' claudecode/config.yaml | head -1)"
-            git add -A
-            git commit -m "chore: sync upstream, re-apply plus overlay (v$version)"
+          version="$(sed -n 's/^version: *"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p' claudecode/config.yaml | head -1)"
+          git add -A
+          # MERGE_HEAD present means the merge still needs a commit, even if the
+          # resulting tree happens to match ours.
+          if [ -e .git/MERGE_HEAD ] || [ -n "$(git status --porcelain)" ]; then
+            git commit -q -m "chore: sync upstream, re-apply plus overlay (v$version)"
           fi
           git push origin HEAD:main
+
+      - name: Open issue for held-back workflow changes
+        if: steps.workflows.outputs.skipped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILES: ${{ steps.workflows.outputs.files }}
+        run: |
+          title="Upstream workflow changes need manual application"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq length)"
+          if [ "$existing" != "0" ]; then
+            echo "Issue already open"
+            exit 0
+          fi
+          {
+            echo 'The upstream sync merged sproft/hass-claude but held back changes to these workflow files, because GitHub forbids the default `GITHUB_TOKEN` from pushing anything under `.github/workflows/`:'
+            echo
+            echo '```'
+            printf '%s\n' "$FILES"
+            echo '```'
+            echo
+            echo 'Apply them manually (needs a token with `workflow` scope, e.g. your own `gh` login):'
+            echo
+            echo '```'
+            echo 'git fetch upstream main'
+            echo 'git checkout upstream/main -- .github/workflows/ci.yml'
+            echo 'git commit && git push origin main'
+            echo '```'
+            echo
+            echo 'Or add a repository secret `SYNC_TOKEN` holding a PAT with `repo` + `workflow` scope, and future syncs will carry workflow changes themselves.'
+            echo
+            echo '🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+          } > /tmp/workflow-issue.md
+          gh issue create --title "$title" --body-file /tmp/workflow-issue.md
 
       - name: Open issue for manual conflict resolution
         if: steps.check.outputs.new == 'true' && steps.merge.outputs.result == 'manual'
