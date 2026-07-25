@@ -1,0 +1,48 @@
+name: token probe (temporary)
+
+# Throwaway experiment: does GITHUB_TOKEN's workflow-file restriction apply to
+# the net diff of a push, or to every commit in it? Delete after reading.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "token-probe[bot]"
+          git config user.email "token-probe@users.noreply.github.com"
+
+      - name: Case A - history touches a workflow, net diff does not
+        run: |
+          git checkout -B probe-net-zero
+          printf '\n# probe touch\n' >> .github/workflows/ci.yml
+          git commit -qam "probe: touch ci.yml"
+          git checkout HEAD~1 -- .github/workflows/ci.yml
+          git commit -qam "probe: revert ci.yml"
+          git diff --stat HEAD~2 HEAD -- .github/workflows || true
+          if git push -f origin HEAD:refs/heads/probe-net-zero 2>&1; then
+            echo "VERDICT_A=accepted (restriction is net-diff based)"
+          else
+            echo "VERDICT_A=rejected (restriction is per-commit based)"
+          fi
+
+      - name: Case B - net diff does touch a workflow (control)
+        run: |
+          git checkout -B probe-net-change origin/main
+          printf '\n# probe touch\n' >> .github/workflows/ci.yml
+          git commit -qam "probe: touch ci.yml"
+          if git push -f origin HEAD:refs/heads/probe-net-change 2>&1; then
+            echo "VERDICT_B=accepted (unexpected - no restriction at all?)"
+          else
+            echo "VERDICT_B=rejected (expected)"
+          fi
