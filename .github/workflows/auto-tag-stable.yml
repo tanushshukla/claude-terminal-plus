@@ -1,0 +1,45 @@
+---
+name: Auto-tag Stable
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - claudecode/config.yaml
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: auto-tag-stable
+  cancel-in-progress: false
+
+jobs:
+  auto-tag:
+    name: Create stable release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN is required to create release tags that trigger downstream workflows."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Create stable release tag when the version changes
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/auto-tag-stable.sh
